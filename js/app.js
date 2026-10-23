@@ -318,7 +318,7 @@ function viewSetup() {
     </div>
     <div class="card"><h2>From ForeFlight</h2>
       <div class="grid3">
-        <div class="field"><label for="s-ete">ETE</label><input id="s-ete" class="mono key" data-d="ete" value="${esc(d.ete)}" inputmode="numeric" placeholder="4:33"></div>
+        <div class="field"><label for="s-ete">ETE</label><input id="s-ete" class="mono key" data-fmt="hm" data-d="ete" value="${esc(d.ete)}" inputmode="numeric" placeholder="4:33"></div>
         <div class="field"><label for="s-fuel">Total fuel</label><input id="s-fuel" class="mono key" data-d="fuel" value="${esc(d.fuel)}" inputmode="decimal" placeholder="70.9"></div>
         <div class="field"><label for="s-taxi">Taxi min</label><input id="s-taxi" class="mono" data-d="taxi" value="${esc(d.taxi)}" inputmode="numeric"></div>
       </div>
@@ -328,7 +328,7 @@ function viewSetup() {
       <label class="check"><input type="checkbox" data-d="alt.on" ${d.alt.on ? 'checked' : ''}>Alternate (optional)</label>
       <div class="grid3 ${d.alt.on ? '' : 'hidden'}" id="altFields">
         <div class="field"><label for="s-alt">Ident</label><input id="s-alt" class="mono" data-d="alt.ident" value="${esc(d.alt.ident)}" autocapitalize="characters"></div>
-        <div class="field"><label for="s-altete">ETE</label><input id="s-altete" class="mono" data-d="alt.ete" value="${esc(d.alt.ete)}" inputmode="numeric" placeholder="0:30"></div>
+        <div class="field"><label for="s-altete">ETE</label><input id="s-altete" class="mono" data-fmt="hm" data-d="alt.ete" value="${esc(d.alt.ete)}" inputmode="numeric" placeholder="0:30"></div>
         <div class="field"><label for="s-altfuel">Fuel</label><input id="s-altfuel" class="mono" data-d="alt.fuel" value="${esc(d.alt.fuel)}" inputmode="decimal" placeholder="8.0"></div>
       </div>
       <div class="mut small">When checked, the reserve is counted after reaching the alternate.</div>
@@ -338,7 +338,7 @@ function viewSetup() {
     </div>
     <details class="card"><summary>Reserve for this flight</summary>
       <div class="grid2">
-        <div class="field"><label for="s-rmin">Time (default ${dur(cfg.rules.reserve.min)})</label><input id="s-rmin" class="mono" data-d="resMin" value="${esc(d.resMin)}" placeholder="${dur(cfg.rules.reserve.min)}"></div>
+        <div class="field"><label for="s-rmin">Time (default ${dur(cfg.rules.reserve.min)})</label><input id="s-rmin" class="mono" data-fmt="hm" inputmode="numeric" data-d="resMin" value="${esc(d.resMin)}" placeholder="${dur(cfg.rules.reserve.min)}"></div>
         <div class="field"><label for="s-rgph">At gph (default ${f1(P.reserveGph(cfg))})</label><input id="s-rgph" class="mono" data-d="resGph" value="${esc(d.resGph)}" inputmode="decimal" placeholder="${f1(P.reserveGph(cfg))}"></div>
       </div>
       <div class="mut small">Leave blank to use the aircraft's reserve rule (${cfg.rules.reserve.mode}).</div>
@@ -529,7 +529,7 @@ function viewFly() {
     <div class="card" style="padding:10px 12px">
       <div class="timebox">
         <div class="stack" style="gap:2px"><label for="flyTime" class="lbl">${ui.viewTime ? 'At time' : 'Time'}</label><span class="z" id="flyZ"></span></div>
-        <input id="flyTime" inputmode="numeric" value="${hm(ui.viewTime || now())}" aria-label="Time to show levels for">
+        <input id="flyTime" data-fmt="hm" inputmode="numeric" value="${hm(ui.viewTime || now())}" aria-label="Time to show levels for">
         <button class="btn sm ${ui.viewTime ? 'outline' : ''}" data-act="liveTime" style="height:44px">${ui.viewTime ? 'Back to live' : 'Live'}</button>
       </div>
     </div>
@@ -670,7 +670,7 @@ function renderSheet() {
 }
 
 const timeField = (id, label, val, extra = '') => `<div class="field"><label for="${id}">${label}</label><div class="row">
-  <input id="${id}" class="big key grow" data-sd="at" value="${esc(val)}" inputmode="numeric">
+  <input id="${id}" class="big key grow" data-fmt="hm" data-sd="at" value="${esc(val)}" inputmode="numeric">
   <button class="btn" style="width:60px;height:52px" data-act="sdMinus">−1m</button><button class="btn" style="width:64px;height:52px" data-act="sdNow">Now</button></div>${extra}</div>`;
 
 function sheetEngine(f) {
@@ -706,7 +706,7 @@ function sheetEte(f) {
     <label class="check"><input type="checkbox" data-sd="divert" ${ui.sd.divert ? 'checked' : ''}>Fuel stop / divert</label>
     <div class="field ${ui.sd.divert ? '' : 'hidden'}" id="divIdent"><label for="sd-ident">Stop ident</label><input id="sd-ident" class="mono" data-sd="ident" value="${esc(ui.sd.ident)}" autocapitalize="characters"></div>
     <div class="grid2">
-      <div class="field"><label for="sd-ete">ETE to <span id="eteDest">${esc(ui.sd.divert ? ui.sd.ident || 'stop' : dest)}</span> (was ${dur(ui.sd.prevEte)})</label><input id="sd-ete" class="big key" data-sd="ete" value="${esc(ui.sd.ete)}" inputmode="numeric" placeholder="2:58"></div>
+      <div class="field"><label for="sd-ete">ETE to <span id="eteDest">${esc(ui.sd.divert ? ui.sd.ident || 'stop' : dest)}</span> (was ${dur(ui.sd.prevEte)})</label><input id="sd-ete" class="big key" data-fmt="hm" data-sd="ete" value="${esc(ui.sd.ete)}" inputmode="numeric" placeholder="2:58"></div>
       <div class="field"><label for="sd-fuel">Fuel to it (ForeFlight)</label><input id="sd-fuel" class="big" data-sd="fuel" value="${esc(ui.sd.fuel)}" inputmode="decimal" placeholder="45.1"></div>
     </div>
     <div class="grid2">
@@ -1151,8 +1151,20 @@ document.addEventListener('click', (ev) => {
 document.addEventListener('pointerdown', markInput, { passive: true });
 document.addEventListener('keydown', markInput, { passive: true });
 
+// Fill "433" -> "4:33", "1548" -> "15:48" from the right, so no colon key is needed.
+export function autoColon(v) {
+  let d = String(v).replace(/\D/g, '').slice(0, 4).replace(/^0+(?=\d)/, '');
+  if (!d) return '';
+  d = d.padStart(3, '0');
+  return `${+d.slice(0, -2)}:${d.slice(-2)}`;
+}
+
 function onField(ev, committed) {
   const el = ev.target;
+  if (el.dataset.fmt === 'hm' && !committed) {
+    el.value = autoColon(el.value);
+    try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) { /* ignore */ }
+  }
   if (el.dataset.d !== undefined && ui.draft) {
     const v = el.type === 'checkbox' ? el.checked : el.value;
     setPath(ui.draft, el.dataset.d, v);
