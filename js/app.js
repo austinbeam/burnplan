@@ -582,10 +582,10 @@ function gauge(cfg, t, level, on) {
   const pct = Math.max(0, Math.min(100, (level / t.capacity) * 100));
   const fl = (cfg.rules.floor.gal / t.capacity) * 100;
   const low = level < cfg.rules.floor.gal - P.TOL;
-  return `<div class="gauge ${t.spot === 'tip' ? 'tip' : ''} ${on ? 'on' : ''} ${low ? 'low' : ''}">
+  return `<button type="button" class="gauge ${t.spot === 'tip' ? 'tip' : ''} ${on ? 'on' : ''} ${low ? 'low' : ''}" data-act="tapTank" data-tank="${esc(t.id)}" aria-label="${esc(t.name)} ${f1(level)} of ${t.capacity} gallons${on ? ', selected now' : ', tap to record a switch'}">
     <div class="nm">${esc(t.id)}${on ? ' · ON' : ''}</div>
-    <div class="tube" role="img" aria-label="${esc(t.name)} ${f1(level)} of ${t.capacity} gallons"><div class="lvl" style="height:${pct}%"></div><div class="flr" style="bottom:${fl}%"></div></div>
-    <div class="g">${f1(level)}</div><div class="of">of ${t.capacity}</div></div>`;
+    <div class="tube" aria-hidden="true"><div class="lvl" style="height:${pct}%"></div><div class="flr" style="bottom:${fl}%"></div></div>
+    <div class="g">${f1(level)}</div><div class="of">of ${t.capacity}</div></button>`;
 }
 
 function renderFlyLive() {
@@ -1264,6 +1264,13 @@ const actions = {
     if (isFinite(t)) { ui.sd.at = sheetFieldValue(t - MIN); $('#sd-at').value = ui.sd.at; renderSheetPreview(); }
   },
   stampEntered() { ui.sd.enteredAt = now(); const e = $('#sdEntered'); if (e) e.innerHTML = tz(ui.sd.enteredAt); },
+  tapTank(el) {
+    const f = activeFlight();
+    if (!f || f.status !== 'active') return toast('Start the flight first');
+    const est = P.estimate(f, f.cfg, now());
+    if (el.dataset.tank === est.active) return toast(`Already on ${est.active}`);
+    openSheet('switch', { tank: el.dataset.tank });
+  },
   saveStart: () => saveSheet('start'),
   saveClimb: () => saveSheet('climb'),
   saveLevel: () => saveSheet('level'),
