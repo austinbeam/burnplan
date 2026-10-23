@@ -650,10 +650,16 @@ function openSheet(name, data = {}) {
   renderSheet();
 }
 function closeSheet() { ui.sheet = null; ui.sd = {}; renderSheet(); }
+function ask(msg, yesLabel, fn) { ui.sheet = 'confirm'; ui.sd = { msg, yesLabel, fn }; renderSheet(); }
 
 function renderSheet() {
   const host = $('#sheet');
   if (!ui.sheet) { host.innerHTML = ''; return; }
+  if (ui.sheet === 'confirm') {
+    host.innerHTML = `<div class="scrim" data-act="scrim"><div class="sheet" role="alertdialog" aria-modal="true" aria-label="Confirm">
+      <h2>${esc(ui.sd.msg)}</h2><div class="row"><button class="btn grow" data-act="closeSheet">Cancel</button><button class="btn danger grow" data-act="confirmYes">${esc(ui.sd.yesLabel)}</button></div></div></div>`;
+    return;
+  }
   const f = activeFlight();
   const body = { switch: sheetSwitch, engine: sheetEngine, check: sheetCheck, ete: sheetEte, shutdown: sheetShutdown }[ui.sheet];
   if (!body || !f) { ui.sheet = null; host.innerHTML = ''; return; }
@@ -1037,10 +1043,11 @@ const actions = {
   discardDraft() {
     const f = activeFlight();
     if (!f || f.status !== 'draft') return;
-    if (!confirm('Discard this planned flight?')) return;
-    delete state.flights[f.id];
-    state.activeFlightId = null; ui.draft = null;
-    persist(); render();
+    ask('Discard this planned flight?', 'Discard', () => {
+      delete state.flights[f.id];
+      state.activeFlightId = null; ui.draft = null;
+      persist(); render();
+    });
   },
   regen() {
     const f = activeFlight();
@@ -1066,6 +1073,7 @@ const actions = {
   },
   openSheet(el) { openSheet(el.dataset.sheet); },
   closeSheet,
+  confirmYes() { const fn = ui.sd.fn; closeSheet(); if (fn) fn(); },
   scrim(el, ev) { if (ev.target === el) closeSheet(); },
   sdTank(el) { ui.sd.tank = el.dataset.tank; renderSheet(); },
   sdNow() { ui.sd.at = hm(now()); $('#sd-at').value = ui.sd.at; renderSheetPreview(); },
@@ -1087,7 +1095,7 @@ const actions = {
     download(`${APP_NAME.toLowerCase()}-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 1), 'application/json');
   },
   exportCsv(el) { const f = state.flights[el.dataset.id]; download(`${f.from || 'flight'}-${f.to || ''}-${new Date(f.engineStart || f.createdAt).toISOString().slice(0, 10)}.csv`, flightCsv(f), 'text/csv'); },
-  deleteFlight(el) { if (!confirm('Delete this flight from the log?')) return; delete state.flights[el.dataset.id]; persist(); go('log'); },
+  deleteFlight(el) { const id = el.dataset.id; ask('Delete this flight from the log?', 'Delete', () => { delete state.flights[id]; persist(); go('log'); }); },
   reopen(el) {
     const cur = activeFlight();
     if (cur && cur.status === 'active') return toast('A flight is in progress');
@@ -1101,8 +1109,7 @@ const actions = {
   deleteTail(el) {
     const id = el.dataset.tail;
     if (Object.values(state.flights).some((f) => f.tail === id && f.id === state.activeFlightId)) return toast('That aircraft has the current flight');
-    if (!confirm(`Remove ${id}? Saved flights stay in the log.`)) return;
-    delete state.tails[id]; persist(); go('aircraft');
+    ask(`Remove ${id}? Saved flights stay in the log.`, 'Remove', () => { delete state.tails[id]; persist(); go('aircraft'); });
   },
   copyType(el) {
     const src = typeById(el.dataset.id);
@@ -1114,8 +1121,7 @@ const actions = {
   deleteType(el) {
     const id = el.dataset.id;
     if (Object.values(state.tails).some((t) => t.typeId === id)) return toast('A tail still uses this type');
-    if (!confirm('Delete this custom type?')) return;
-    delete state.customTypes[id]; persist(); go('aircraft');
+    ask('Delete this custom type?', 'Delete', () => { delete state.customTypes[id]; persist(); go('aircraft'); });
   },
   addTank() {
     const id = ui.sub.slice(5);
