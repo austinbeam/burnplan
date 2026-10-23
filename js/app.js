@@ -59,6 +59,14 @@ function cfgForTail(tailId, flightOv) {
   return type ? P.resolveConfig(type, tail, flightOv) : null;
 }
 const sideCls = (cfg, id) => ((cfg.tanks.find((t) => t.id === id) || {}).side === 'R' ? 'tankR' : 'tankL');
+// One distinct color per tank: left = cool (main blue, tip cyan), right = warm (main orange, tip yellow), center grey.
+function tankColor(cfg, id) {
+  const t = cfg.tanks.find((x) => x.id === id);
+  if (!t) return 'var(--mut)';
+  const outer = t.spot === 'tip' || t.spot === 'outboard';
+  if (t.side === 'C') return 'var(--tk-c)';
+  return t.side === 'R' ? (outer ? 'var(--tk-ro)' : 'var(--tk-ri)') : (outer ? 'var(--tk-lo)' : 'var(--tk-li)');
+}
 const fullLevels = (cfg) => Object.fromEntries(cfg.tanks.map((t) => [t.id, t.capacity]));
 
 // ---------- flights ----------
@@ -470,11 +478,7 @@ function viewPlan() {
   const shortMin = p.endMin - chk.planEnd;
   const shortFuel = shortMin > 0.5 ? P.fuelBetween(p.segs, chk.planEnd, p.endMin) : 0;
   const tm = P.tankMap(cfg);
-  const colorOf = (id) => {
-    const t = tm[id]; const idx = cfg.tanks.filter((x) => x.side === t.side).indexOf(t);
-    const outer = t.spot === 'tip' || t.spot === 'outboard';
-    return t.side === 'R' ? (outer ? 'var(--rightd)' : 'var(--right)') : (outer ? 'var(--fill)' : 'var(--blue)');
-  };
+  const colorOf = (id) => tankColor(cfg, id);
   const timeLbl = (min) => (f.engineStart ? `${fmtTimer(timerAt(f, MS(f, min)))}<br><span class="z">${hm(MS(f, min))}</span>` : fmtTimer(min - f.taxiMin));
   const whole = active && (state.settings.planView || 'whole') === 'whole';
   const pastRows = whole ? actualLegs(f) : [];
@@ -498,7 +502,7 @@ function viewPlan() {
         const restMin = p.endMin - p.startMin;
         const total = flownMin + Math.max(restMin, chk.planEnd - p.startMin);
         const nowPct = total > 0 ? (flownMin / total) * 100 : 0;
-        const past = (x, color) => `<div style="flex:${x};background:${color};opacity:.5"></div>`;
+        const past = (x, color) => `<div style="flex:${x};background:${color}"></div>`;
         const marker = flownMin > 0.5 ? `<div class="nowmark" style="left:${nowPct}%"></div>` : '';
         return `<div class="barwrap">
           <div class="bar phasebar" aria-label="Flight phases">${flownPh.map((x) => past(x.min, `var(--ph-${x.phase})`)).join('')}${P.phasesBetween(p.segs, p.startMin, p.endMin).map((x) => `<div style="flex:${x.min};background:var(--ph-${x.phase})"></div>`).join('')}</div>
@@ -510,13 +514,13 @@ function viewPlan() {
     </div>
     <div class="legs">
       <div class="legrow head"><span>#</span><span>Tank</span><span>Start</span><span>Min</span><span>Gal</span><span>After</span><span class="right">L/R Δ</span><span></span></div>
-      ${pastRows.map((r) => `<div class="legrow past"><span>✓</span><span class="${sideCls(cfg, r.tank)}">${esc(r.tank)}</span><span>${fmtTimer(timerAt(f, r.start))}</span><span>${Math.round((r.end - r.start) / MIN)}</span><span>${f1(r.fuel)}</span><span>${f1(r.after)}</span><span class="right">actual</span><span></span>${phaseLines(P.actualPhases(f, r.start, r.end), fmtTimer(timerAt(f, r.end)))}</div>`).join('')}
+      ${pastRows.map((r) => `<div class="legrow past"><span>✓</span><span style="color:${colorOf(r.tank)};font-weight:600;font-family:var(--sans)">${esc(r.tank)}</span><span>${fmtTimer(timerAt(f, r.start))}</span><span>${Math.round((r.end - r.start) / MIN)}</span><span>${f1(r.fuel)}</span><span>${f1(r.after)}</span><span class="right">actual</span><span></span>${phaseLines(P.actualPhases(f, r.start, r.end), fmtTimer(timerAt(f, r.end)))}</div>`).join('')}
       ${chk.rows.map((r, i) => {
         const bad = r.flags.filter((x) => ['empty', 'floor', 'imbalance', 'sequence'].includes(x));
         const isNow = active && nowMin >= r.startMin && nowMin < r.startMin + r.min;
         return `<div class="legrow ${isNow ? 'now' : ''}">
           <span class="${bad.length ? 'flag' : 'mut'}">${bad.length ? '!' : i + 1}</span>
-          <select aria-label="Leg ${i + 1} tank" data-leg-tank="${i}" class="${sideCls(cfg, r.tank)}">${cfg.tanks.map((t) => `<option ${t.id === r.tank ? 'selected' : ''}>${esc(t.id)}</option>`).join('')}</select>
+          <select aria-label="Leg ${i + 1} tank" data-leg-tank="${i}" style="color:${colorOf(r.tank)};font-weight:600">${cfg.tanks.map((t) => `<option ${t.id === r.tank ? 'selected' : ''}>${esc(t.id)}</option>`).join('')}</select>
           <span>${timeLbl(r.startMin)}</span>
           <input aria-label="Leg ${i + 1} minutes" data-leg-min="${i}" value="${Math.round(r.min)}" inputmode="numeric">
           <span>${f1(r.fuel)}</span>
