@@ -179,3 +179,7 @@ button.gauge:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px
 .nowmark { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--amber); border-radius: 1px; }
 .axis { position: relative; display: flex; justify-content: space-between; font-size: 11px; color: var(--mut); height: 16px; }
 .axis .nowlbl { position: absolute; transform: translateX(-50%); color: var(--amber); white-space: nowrap; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--s1); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; margin-bottom: 4px; }
+.seg button { height: 38px; border: none; border-radius: 8px; background: transparent; color: var(--mut); font-size: 14px; font-weight: 500; cursor: pointer; }
+.seg button.on { background: var(--s2); color: var(--tx); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
+.seg button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }

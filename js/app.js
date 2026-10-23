@@ -476,7 +476,8 @@ function viewPlan() {
     return t.side === 'R' ? (outer ? 'var(--rightd)' : 'var(--right)') : (outer ? 'var(--fill)' : 'var(--blue)');
   };
   const timeLbl = (min) => (f.engineStart ? `${fmtTimer(timerAt(f, MS(f, min)))}<br><span class="z">${hm(MS(f, min))}</span>` : fmtTimer(min - f.taxiMin));
-  const pastRows = active ? actualLegs(f) : [];
+  const whole = active && (state.settings.planView || 'whole') === 'whole';
+  const pastRows = whole ? actualLegs(f) : [];
 
   return `<div class="top"><div><div class="kicker">Plan · ${esc(f.tail)}</div><h1>${flightTitle(f)}</h1></div>
     <span class="badge ${p.source === 'edited' ? 'amber' : ''}">${p.source === 'edited' ? 'Edited' : p.source === 'rebuilt' ? 'Rebuilt' : 'Generated'}</span></div>
@@ -488,10 +489,11 @@ function viewPlan() {
     </div>
     ${['error', 'warn', 'info'].map((sv) => (groupIssues[sv] || []).map((i) => `<div class="issue ${sv}">${sv === 'info' ? ICON.info : ICON.warn}<div>${i.legIndex != null && i.legIndex >= 0 ? `<b>Leg ${i.legIndex + 1}:</b> ` : ''}${esc(i.msg)}</div></div>`).join('')).join('')}
     <div class="stack" style="gap:6px">
+      ${active ? `<div class="seg" role="group" aria-label="Plan view"><button class="${whole ? 'on' : ''}" aria-pressed="${whole}" data-act="planView" data-v="whole">Whole flight</button><button class="${whole ? '' : 'on'}" aria-pressed="${!whole}" data-act="planView" data-v="remaining">Remaining</button></div>` : ''}
       <div class="row between small mut"><span>Tank use over time</span><span>max Δ ${f1(chk.maxImb)} · limit ${cfg.rules.imbalance.gal}</span></div>
       ${(() => {
         // Whole flight: flown part from actual history (dimmed), then the remaining plan.
-        const flownPh = active ? P.actualPhases(f, f.engineStart, MS(f, p.startMin)) : [];
+        const flownPh = whole ? P.actualPhases(f, f.engineStart, MS(f, p.startMin)) : [];
         const flownMin = flownPh.reduce((a, x) => a + x.min, 0);
         const restMin = p.endMin - p.startMin;
         const total = flownMin + Math.max(restMin, chk.planEnd - p.startMin);
@@ -502,7 +504,7 @@ function viewPlan() {
           <div class="bar phasebar" aria-label="Flight phases">${flownPh.map((x) => past(x.min, `var(--ph-${x.phase})`)).join('')}${P.phasesBetween(p.segs, p.startMin, p.endMin).map((x) => `<div style="flex:${x.min};background:var(--ph-${x.phase})"></div>`).join('')}</div>
           <div class="bar" aria-label="Tank use">${pastRows.map((r) => past((r.end - r.start) / MIN, colorOf(r.tank))).join('')}${chk.rows.map((r) => `<div style="flex:${r.min};background:${colorOf(r.tank)}"></div>`).join('')}${shortMin > 0.5 ? `<div style="flex:${shortMin};background:repeating-linear-gradient(45deg,var(--warn) 0 4px,var(--warnbg) 4px 8px)"></div>` : ''}</div>
           ${marker}</div>
-          <div class="axis mono"><span>${active ? 'taxi' : 'taxi'}</span>${flownMin > 0.5 ? `<span class="nowlbl" style="left:${Math.min(84, Math.max(16, nowPct))}%">now ${fmtTimer(timerAt(f, now()))}</span>` : ''}<span>${fmtTimer((active ? timerAt(f, MS(f, p.endMin)) : p.endMin - f.taxiMin))}</span></div>`;
+          <div class="axis mono"><span>${whole || !active ? 'taxi' : 'now ' + fmtTimer(timerAt(f, MS(f, p.startMin)))}</span>${flownMin > 0.5 ? `<span class="nowlbl" style="left:${Math.min(84, Math.max(16, nowPct))}%">now ${fmtTimer(timerAt(f, now()))}</span>` : ''}<span>${fmtTimer((active ? timerAt(f, MS(f, p.endMin)) : p.endMin - f.taxiMin))}</span></div>`;
       })()}
       <div class="legend"><span><span class="sw" style="background:var(--ph-taxi)"></span>taxi</span><span><span class="sw" style="background:var(--ph-climb)"></span>climb</span><span><span class="sw" style="background:var(--ph-cruise)"></span>cruise</span><span class="dim">|</span>${cfg.tanks.map((t) => `<span><span class="sw" style="background:${colorOf(t.id)}"></span>${esc(t.id)}</span>`).join('')}${shortMin > 0.5 ? '<span>hatched = short</span>' : ''}</div>
     </div>
@@ -1404,6 +1406,7 @@ const actions = {
     const e = f.events[i];
     ask(`Delete this ${EV_LABEL[e.type] || e.type} entry?`, 'Delete', () => { f.events.splice(i, 1); if (e.type === 'shutdown') { f.shutdown = null; f.finalUsed = null; } afterHistoryEdit(f, 'history edit'); toast('Deleted'); render(); });
   },
+  planView(el) { state.settings.planView = el.dataset.v; persist(); render(); },
   saveStart: () => saveSheet('start'),
   saveClimb: () => saveSheet('climb'),
   saveLevel: () => saveSheet('level'),
