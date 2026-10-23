@@ -443,7 +443,13 @@ function tailForm() {
 // PLAN
 // =====================================================================
 // Phase breakdown under a leg: one line per phase when a leg covers more than one.
-function phaseLines(list, untilLbl) {
+function phaseLines(raw, untilLbl) {
+  const list = [];
+  for (const x of raw) {
+    const last = list[list.length - 1];
+    if (last && last.phase === x.phase) { const fuel = (last.min / 60) * last.gph + (x.min / 60) * x.gph; last.min += x.min; last.gph = fuel / (last.min / 60); }
+    else list.push({ ...x });
+  }
   const item = (x) => `<span class="ph ph-${x.phase}">${x.phase}</span> ${Math.round(x.min)}m @ ${f1(x.gph)} gph · ${f1((x.min / 60) * x.gph)} gal`;
   if (list.length <= 1) return `<div class="legsub">${list.map(item).join('')} → until ${untilLbl}</div>`;
   return `<div class="legsub multi">${list.map((x) => `<div>${item(x)}</div>`).join('')}<div>→ until ${untilLbl}</div></div>`;
@@ -483,8 +489,21 @@ function viewPlan() {
     ${['error', 'warn', 'info'].map((sv) => (groupIssues[sv] || []).map((i) => `<div class="issue ${sv}">${sv === 'info' ? ICON.info : ICON.warn}<div>${i.legIndex != null && i.legIndex >= 0 ? `<b>Leg ${i.legIndex + 1}:</b> ` : ''}${esc(i.msg)}</div></div>`).join('')).join('')}
     <div class="stack" style="gap:6px">
       <div class="row between small mut"><span>Tank use over time</span><span>max Δ ${f1(chk.maxImb)} · limit ${cfg.rules.imbalance.gal}</span></div>
-      <div class="bar phasebar" aria-label="Flight phases">${P.phasesBetween(p.segs, p.startMin, p.endMin).map((x) => `<div style="flex:${x.min};background:var(--ph-${x.phase})"></div>`).join('')}</div>
-      <div class="bar">${chk.rows.map((r) => `<div style="flex:${r.min};background:${colorOf(r.tank)}"></div>`).join('')}${shortMin > 0.5 ? `<div style="flex:${shortMin};background:repeating-linear-gradient(45deg,var(--warn) 0 4px,var(--warnbg) 4px 8px)"></div>` : ''}</div>
+      ${(() => {
+        // Whole flight: flown part from actual history (dimmed), then the remaining plan.
+        const flownPh = active ? P.actualPhases(f, f.engineStart, MS(f, p.startMin)) : [];
+        const flownMin = flownPh.reduce((a, x) => a + x.min, 0);
+        const restMin = p.endMin - p.startMin;
+        const total = flownMin + Math.max(restMin, chk.planEnd - p.startMin);
+        const nowPct = total > 0 ? (flownMin / total) * 100 : 0;
+        const past = (x, color) => `<div style="flex:${x};background:${color};opacity:.5"></div>`;
+        const marker = flownMin > 0.5 ? `<div class="nowmark" style="left:${nowPct}%"></div>` : '';
+        return `<div class="barwrap">
+          <div class="bar phasebar" aria-label="Flight phases">${flownPh.map((x) => past(x.min, `var(--ph-${x.phase})`)).join('')}${P.phasesBetween(p.segs, p.startMin, p.endMin).map((x) => `<div style="flex:${x.min};background:var(--ph-${x.phase})"></div>`).join('')}</div>
+          <div class="bar" aria-label="Tank use">${pastRows.map((r) => past((r.end - r.start) / MIN, colorOf(r.tank))).join('')}${chk.rows.map((r) => `<div style="flex:${r.min};background:${colorOf(r.tank)}"></div>`).join('')}${shortMin > 0.5 ? `<div style="flex:${shortMin};background:repeating-linear-gradient(45deg,var(--warn) 0 4px,var(--warnbg) 4px 8px)"></div>` : ''}</div>
+          ${marker}</div>
+          <div class="axis mono"><span>${active ? 'taxi' : 'taxi'}</span>${flownMin > 0.5 ? `<span class="nowlbl" style="left:${Math.min(84, Math.max(16, nowPct))}%">now ${fmtTimer(timerAt(f, now()))}</span>` : ''}<span>${fmtTimer((active ? timerAt(f, MS(f, p.endMin)) : p.endMin - f.taxiMin))}</span></div>`;
+      })()}
       <div class="legend"><span><span class="sw" style="background:var(--ph-taxi)"></span>taxi</span><span><span class="sw" style="background:var(--ph-climb)"></span>climb</span><span><span class="sw" style="background:var(--ph-cruise)"></span>cruise</span><span class="dim">|</span>${cfg.tanks.map((t) => `<span><span class="sw" style="background:${colorOf(t.id)}"></span>${esc(t.id)}</span>`).join('')}${shortMin > 0.5 ? '<span>hatched = short</span>' : ''}</div>
     </div>
     <div class="legs">
@@ -525,7 +544,7 @@ function actualLegs(f, until = now()) {
   let tank = f.startTank, start = f.engineStart;
   for (const e of sw) { out.push({ tank, start, end: e.at }); tank = e.tank; start = e.at; }
   out.push({ tank, start, end: Math.min(until, cut) });
-  return out.filter((l) => l.start < cut && l.end > l.start).map((l) => {
+  return out.filter((l) => l.start < cut && l.end - l.start >= 0.5 * MIN).map((l) => {
     const e1 = P.estimate(f, f.cfg, l.start), e2 = P.estimate(f, f.cfg, l.end);
     return { ...l, end: Math.min(l.end, cut), fuel: e1.levels[l.tank] - e2.levels[l.tank], after: e2.levels[l.tank] };
   });

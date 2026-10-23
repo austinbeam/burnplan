@@ -265,7 +265,7 @@ export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requi
     const gi = groupOf(leg.tank);
     if (gi >= 0 && gi < lastGroup) { flags.push('sequence'); add('sequence', 'warn', i, `${leg.tank} after a later tank group`); }
     if (gi > lastGroup) lastGroup = gi;
-    if (i > 0 && i < legs.length - 1 && leg.min < (r.minLegMin || 0)) { flags.push('short'); add('shortleg', 'info', i, `Leg ${i + 1} is ${leg.min} min`); }
+    if (i > 0 && i < legs.length - 1 && leg.min < (r.minLegMin || 0)) { flags.push('short'); add('shortleg', 'info', i, `Leg ${i + 1} is ${Math.round(leg.min)} min`); }
     if (i > 0 && legs[i - 1].tank === leg.tank) { flags.push('dup'); add('dup', 'info', i, `Leg ${i + 1} repeats ${leg.tank}`); }
     rows.push({ ...leg, startMin: start, fuel, after: lv[leg.tank], levels: { ...lv }, L, R, imb, flags });
   });
