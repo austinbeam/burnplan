@@ -188,3 +188,5 @@ button.gauge:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px
 .nowmark { top: -6px; bottom: -6px; width: 3px; margin-left: -1.5px; box-shadow: 0 0 0 2px var(--bg); }
 .nowmark::before { content: ""; position: absolute; top: -5px; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-top-color: var(--amber); }
 .legrow.past .onnow { color: var(--amber); font-family: var(--sans); font-weight: 600; }
+.btn:active, .tankpick button:active, .seg button:active, .iconbtn:active { transform: scale(0.97); filter: brightness(1.15); }
+.btn, .tankpick button { transition: transform .06s ease, filter .06s ease; }

@@ -1114,16 +1114,19 @@ function saveSheet(kind) {
     unlockAudio();
     closeSheet(); persist(); go('fly'); return;
   }
+  let later = null, msg = '';
   if (kind === 'switch') {
     if (!ui.sd.tank) return toast('Pick a tank');
     f.events.push({ type: 'switch', tank: ui.sd.tank, at: t, enteredAt, planned: ui.sd.planned ? { tank: ui.sd.planned.tank, at: ui.sd.planned.start } : null });
-    if (ui.sd.rebuild) rebuildFrom(f, Math.max(t, now()), 'after switch');
+    if (ui.sd.rebuild) later = [Math.max(t, now()), 'after switch'];
+    msg = `Switched to ${ui.sd.tank} at ${fmtTimer(timerAt(f, t))}`;
   }
   if (kind === 'check') {
     const u = num(ui.sd.used);
     if (!isFinite(u)) return toast('Enter fuel used');
     f.events.push({ type: 'check', at: t, enteredAt, used: u, gph: num(ui.sd.gph) || null });
-    if (ui.sd.rebuild) rebuildFrom(f, Math.max(t, now()), 'after fuel check');
+    if (ui.sd.rebuild) later = [Math.max(t, now()), 'after fuel check'];
+    msg = `Fuel check saved · ${f1(u)} gal used`;
   }
   if (kind === 'ete') {
     const ete = P.parseDur(ui.sd.ete);
@@ -1132,16 +1135,19 @@ function saveSheet(kind) {
     if (ui.sd.divert) { ev.divert = (ui.sd.ident || 'STOP').toUpperCase(); f.divert = { ident: ev.divert, at: t }; ev.altFuel = 0; if (f.alt) f.alt.onBeforeDivert = f.alt.on; if (f.alt) f.alt.on = false; }
     if (!ev.fuelToDest && !ev.gph) ev.gph = P.estimate(f, f.cfg, t).rate;
     f.events.push(ev);
-    rebuildFrom(f, Math.max(t, now()), ui.sd.divert ? 'divert' : 'ETE update');
+    later = [Math.max(t, now()), ui.sd.divert ? 'divert' : 'ETE update'];
+    msg = ui.sd.divert ? `Diverting to ${ev.divert}` : `ETE ${dur(ete)} saved`;
   }
   if (kind === 'climb') {
     const len = P.parseDur(ui.sd.len), gph = num(ui.sd.gph);
     f.events.push({ type: 'climb', at: t, enteredAt, gph: gph > 0 ? gph : f.climbGph || f.cfg.burn.climbGph, until: isFinite(len) && len > 0 ? t + len * MIN : null });
-    if (ui.sd.rebuild) rebuildFrom(f, Math.max(t, now()), 'climb');
+    if (ui.sd.rebuild) later = [Math.max(t, now()), 'climb'];
+    msg = `Climb from ${fmtTimer(timerAt(f, t))}`;
   }
   if (kind === 'level') {
     f.events.push({ type: 'level', at: t, enteredAt });
-    if (ui.sd.rebuild) rebuildFrom(f, Math.max(t, now()), 'level off');
+    if (ui.sd.rebuild) later = [Math.max(t, now()), 'level off'];
+    msg = `Level at ${fmtTimer(timerAt(f, t))}`;
   }
   if (kind === 'shutdown') {
     f.shutdown = t; f.finalUsed = num(ui.sd.used) || null; f.status = 'closed';
@@ -1149,8 +1155,16 @@ function saveSheet(kind) {
     state.activeFlightId = null; ui.draft = null;
     closeSheet(); persist(); toast('Flight saved'); go('log', f.id); return;
   }
+  // Respond instantly: close the panel, confirm, redraw. Rebuild the plan and save right after the screen updates.
   ui.alert = null;
-  closeSheet(); persist(); render();
+  closeSheet();
+  if (msg) toast(msg);
+  render();
+  requestAnimationFrame(() => setTimeout(() => {
+    if (later) rebuildFrom(f, later[0], later[1]);
+    persist();
+    if (later) render();
+  }, 30));
 }
 
 // =====================================================================
