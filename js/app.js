@@ -646,7 +646,7 @@ function renderFlyLive() {
       <div class="gauges">${L.map((t) => gauge(cfg, t, est.levels[t.id], t.id === est.active)).join('')}<div class="mid"></div>${C.map((t) => gauge(cfg, t, est.levels[t.id], t.id === est.active)).join('')}${C.length ? '<div class="mid"></div>' : ''}${R.map((t) => gauge(cfg, t, est.levels[t.id], t.id === est.active)).join('')}</div>
     </div>
     <div class="sides"><div><span class="mut">Left</span><span class="v">${f1(SL)}</span></div><div class="tot" style="align-items:center"><span class="mut">Total</span><span class="v">${f1(est.total)}</span></div><div style="align-items:flex-end"><span class="mut">Right</span><span class="v">${f1(SR)}</span></div></div>
-    <div class="mut small" style="text-align:center;margin-top:-6px">Imbalance ${f1(Math.abs(imb))} gal${Math.abs(imb) > 0.4 ? ` (${imb < 0 ? 'left' : 'right'} light)` : ''} · limit ${cfg.rules.imbalance.gal} · dashed line = ${cfg.rules.floor.gal} gal floor</div>
+    <div class="mut small" style="text-align:center;margin-top:10px;line-height:1.4">Imbalance ${f1(Math.abs(imb))} gal${Math.abs(imb) > 0.4 ? ` (${imb < 0 ? 'left' : 'right'} light)` : ''} · limit ${cfg.rules.imbalance.gal} · dashed line = ${cfg.rules.floor.gal} gal floor</div>
     ${started ? (() => {
       const ph = est.phase || P.phaseAt(f, T);
       const climbing = ph.phase === 'climb';
