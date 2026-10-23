@@ -481,7 +481,12 @@ function viewPlan() {
   const colorOf = (id) => tankColor(cfg, id);
   const timeLbl = (min) => (f.engineStart ? `${fmtTimer(timerAt(f, MS(f, min)))}<br><span class="z">${hm(MS(f, min))}</span>` : fmtTimer(min - f.taxiMin));
   const whole = active && (state.settings.planView || 'whole') === 'whole';
-  const pastRows = whole ? actualLegs(f) : [];
+  const pastRows = whole ? actualLegs(f, now(), false) : [];
+  // Plan rows still ahead (or in progress) — anything already flown is shown from actual history instead.
+  const curMin = active ? (now() - f.engineStart) / MIN : -1;
+  const estNow = active ? P.estimate(f, f.cfg, now()) : null;
+  const planAtNow = active ? chk.rows.find((r) => curMin >= r.startMin && curMin < r.startMin + r.min) : null;
+  const offPlan = !!(planAtNow && estNow && planAtNow.tank !== estNow.active);
 
   return `<div class="top"><div><div class="kicker">Plan · ${esc(f.tail)}</div><h1>${flightTitle(f)}</h1></div>
     <span class="badge ${p.source === 'edited' ? 'amber' : ''}">${p.source === 'edited' ? 'Edited' : p.source === 'rebuilt' ? 'Rebuilt' : 'Generated'}</span></div>
@@ -496,26 +501,36 @@ function viewPlan() {
       ${active ? `<div class="seg" role="group" aria-label="Plan view"><button class="${whole ? 'on' : ''}" aria-pressed="${whole}" data-act="planView" data-v="whole">Whole flight</button><button class="${whole ? '' : 'on'}" aria-pressed="${!whole}" data-act="planView" data-v="remaining">Remaining</button></div>` : ''}
       <div class="row between small mut"><span>Tank use over time</span><span>max Δ ${f1(chk.maxImb)} · limit ${cfg.rules.imbalance.gal}</span></div>
       ${(() => {
-        // Whole flight: flown part from actual history (dimmed), then the remaining plan.
-        const flownPh = whole ? P.actualPhases(f, f.engineStart, MS(f, p.startMin)) : [];
-        const flownMin = flownPh.reduce((a, x) => a + x.min, 0);
-        const restMin = p.endMin - p.startMin;
-        const total = flownMin + Math.max(restMin, chk.planEnd - p.startMin);
+        // Whole flight = what was actually flown (from recorded switches/climbs) up to the current time,
+        // then the plan from now on. Remaining = the plan from now on only.
+        const T = now();
+        const nowMin = active ? Math.max(p.startMin, (T - f.engineStart) / MIN) : p.startMin;
+        const flownTanks = whole ? flownLegs(f, T) : [];
+        const flownPh = whole ? P.actualPhases(f, f.engineStart, T) : [];
+        const flownMin = whole ? (T - f.engineStart) / MIN : 0;
+        const clip = (a, b) => Math.max(0, b - Math.max(a, nowMin));
+        const planTanks = chk.rows.map((r) => ({ tank: r.tank, min: clip(r.startMin, r.startMin + r.min) })).filter((x) => x.min > 0.01);
+        const planPh = P.phasesBetween(p.segs, nowMin, p.endMin);
+        const shortRest = shortMin > 0.5 ? clip(chk.planEnd, p.endMin) : 0;
+        const restMin = Math.max(p.endMin, chk.planEnd) - nowMin;
+        const total = flownMin + restMin;
         const nowPct = total > 0 ? (flownMin / total) * 100 : 0;
         const past = (x, color) => `<div style="flex:${x};background:${color}"></div>`;
         const marker = flownMin > 0.5 ? `<div class="nowmark" style="left:${nowPct}%"></div>` : '';
         return `<div class="barwrap">
-          <div class="bar phasebar" aria-label="Flight phases">${flownPh.map((x) => past(x.min, `var(--ph-${x.phase})`)).join('')}${P.phasesBetween(p.segs, p.startMin, p.endMin).map((x) => `<div style="flex:${x.min};background:var(--ph-${x.phase})"></div>`).join('')}</div>
-          <div class="bar" aria-label="Tank use">${pastRows.map((r) => past((r.end - r.start) / MIN, colorOf(r.tank))).join('')}${chk.rows.map((r) => `<div style="flex:${r.min};background:${colorOf(r.tank)}"></div>`).join('')}${shortMin > 0.5 ? `<div style="flex:${shortMin};background:repeating-linear-gradient(45deg,var(--warn) 0 4px,var(--warnbg) 4px 8px)"></div>` : ''}</div>
+          <div class="bar phasebar" aria-label="Flight phases">${flownPh.map((x) => past(x.min, `var(--ph-${x.phase})`)).join('')}${planPh.map((x) => past(x.min, `var(--ph-${x.phase})`)).join('')}</div>
+          <div class="bar" aria-label="Tank use">${flownTanks.map((r) => past(r.min, colorOf(r.tank))).join('')}${planTanks.map((r) => past(r.min, colorOf(r.tank))).join('')}${shortRest > 0.5 ? `<div style="flex:${shortRest};background:repeating-linear-gradient(45deg,var(--warn) 0 4px,var(--warnbg) 4px 8px)"></div>` : ''}</div>
           ${marker}</div>
-          <div class="axis mono"><span>${whole || !active ? 'taxi' : 'now ' + fmtTimer(timerAt(f, MS(f, p.startMin)))}</span>${flownMin > 0.5 ? `<span class="nowlbl" style="left:${Math.min(84, Math.max(16, nowPct))}%">now ${fmtTimer(timerAt(f, now()))}</span>` : ''}<span>${fmtTimer((active ? timerAt(f, MS(f, p.endMin)) : p.endMin - f.taxiMin))}</span></div>`;
+          <div class="axis mono"><span>${whole || !active ? 'taxi' : 'now ' + fmtTimer(timerAt(f, T))}</span>${flownMin > 0.5 ? `<span class="nowlbl" style="left:${Math.min(84, Math.max(16, nowPct))}%">now ${fmtTimer(timerAt(f, now()))}</span>` : ''}<span>${fmtTimer((active ? timerAt(f, MS(f, p.endMin)) : p.endMin - f.taxiMin))}</span></div>`;
       })()}
       <div class="legend"><span><span class="sw" style="background:var(--ph-taxi)"></span>taxi</span><span><span class="sw" style="background:var(--ph-climb)"></span>climb</span><span><span class="sw" style="background:var(--ph-cruise)"></span>cruise</span><span class="dim">|</span>${cfg.tanks.map((t) => `<span><span class="sw" style="background:${colorOf(t.id)}"></span>${esc(t.id)}</span>`).join('')}${shortMin > 0.5 ? '<span>hatched = short</span>' : ''}</div>
     </div>
     <div class="legs">
       <div class="legrow head"><span>#</span><span>Tank</span><span>Start</span><span>Min</span><span>Gal</span><span>After</span><span class="right">L/R Δ</span><span></span></div>
-      ${pastRows.map((r) => `<div class="legrow past"><span>✓</span><span style="color:${colorOf(r.tank)};font-weight:600;font-family:var(--sans)">${esc(r.tank)}</span><span>${fmtTimer(timerAt(f, r.start))}</span><span>${Math.round((r.end - r.start) / MIN)}</span><span>${f1(r.fuel)}</span><span>${f1(r.after)}</span><span class="right">actual</span><span></span>${phaseLines(P.actualPhases(f, r.start, r.end), fmtTimer(timerAt(f, r.end)))}</div>`).join('')}
+      ${pastRows.map((r, idx) => `<div class="legrow past"><span>✓</span><span style="color:${colorOf(r.tank)};font-weight:600;font-family:var(--sans)">${esc(r.tank)}</span><span>${fmtTimer(timerAt(f, r.start))}</span><span>${Math.round((r.end - r.start) / MIN)}</span><span>${f1(r.fuel)}</span><span>${f1(r.after)}</span><span class="right ${idx === pastRows.length - 1 ? 'onnow' : ''}">${idx === pastRows.length - 1 ? 'on now' : 'actual'}</span><span></span>${phaseLines(P.actualPhases(f, r.start, r.end), idx === pastRows.length - 1 ? 'now ' + fmtTimer(timerAt(f, r.end)) : fmtTimer(timerAt(f, r.end)))}</div>`).join('')}
+      ${offPlan ? `<div class="issue warn" style="margin:8px">${ICON.warn}<div>You're on <b>${esc(estNow.active)}</b>; the plan has <b>${esc(planAtNow.tank)}</b> right now. <button class="btn sm outline" data-act="regen" style="margin-top:6px">Rebuild from now</button></div></div>` : ''}
       ${chk.rows.map((r, i) => {
+        if (active && r.startMin + r.min <= curMin + 0.01) return '';
         const bad = r.flags.filter((x) => ['empty', 'floor', 'imbalance', 'sequence'].includes(x));
         const isNow = active && nowMin >= r.startMin && nowMin < r.startMin + r.min;
         return `<div class="legrow ${isNow ? 'now' : ''}">
@@ -542,10 +557,20 @@ function viewPlan() {
 }
 
 // Actual legs flown so far (from switch events), for display.
-function actualLegs(f, until = now()) {
+// Tank segments actually flown from engine start to \`until\`, from recorded switches (no plan involved).
+function flownLegs(f, until) {
+  const sw = f.events.filter((e) => e.type === 'switch' && e.at <= until).sort((a, b) => a.at - b.at);
+  const out = [];
+  let tank = f.startTank, start = f.engineStart;
+  for (const e of sw) { if (e.at > start) out.push({ tank, min: (e.at - start) / MIN }); tank = e.tank; start = Math.max(start, e.at); }
+  if (until > start) out.push({ tank, min: (until - start) / MIN });
+  return out;
+}
+
+function actualLegs(f, until = now(), cutAtPlan = true) {
   if (!f.engineStart) return [];
   const sw = f.events.filter((e) => e.type === 'switch' && e.at <= until).sort((a, b) => a.at - b.at);
-  const cut = MS(f, f.plan.startMin);
+  const cut = cutAtPlan ? MS(f, f.plan.startMin) : until;
   const out = [];
   let tank = f.startTank, start = f.engineStart;
   for (const e of sw) { out.push({ tank, start, end: e.at }); tank = e.tank; start = e.at; }

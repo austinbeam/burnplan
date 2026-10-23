@@ -187,3 +187,4 @@ button.gauge:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px
 :root { --tk-li: #4F8FE8; --tk-lo: #5FD8E6; --tk-ri: #E8893A; --tk-ro: #EBCB4E; --tk-c: #B0B8C4; }
 .nowmark { top: -6px; bottom: -6px; width: 3px; margin-left: -1.5px; box-shadow: 0 0 0 2px var(--bg); }
 .nowmark::before { content: ""; position: absolute; top: -5px; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-top-color: var(--amber); }
+.legrow.past .onnow { color: var(--amber); font-family: var(--sans); font-weight: 600; }
