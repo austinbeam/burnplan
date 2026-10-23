@@ -373,6 +373,25 @@ export function estimate(flight, cfg, T) {
   return { levels: lv, active, used, total, rate: rateAtMs(flight, T), phase: phaseAt(flight, T) };
 }
 
+// Phases actually flown between two moments (taxi / climb / cruise), using takeoff, climb and level events.
+export function actualPhases(flight, a, b) {
+  if (b <= a) return [];
+  const evs = flight.events || [];
+  const segAbs = flight.segs.flatMap((sg) => [flight.engineStart + sg.start * MS_MIN, flight.engineStart + (sg.start + sg.min) * MS_MIN]);
+  const cuts = [a, b, takeoffMs(flight), ...evs.map((e) => e.at), ...evs.filter((e) => e.until).map((e) => e.until), ...segAbs]
+    .filter((x) => x >= a && x <= b);
+  const pts = [...new Set(cuts)].sort((x, y) => x - y);
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const ph = phaseAt(flight, pts[i]);
+    const min = (pts[i + 1] - pts[i]) / MS_MIN;
+    const last = out[out.length - 1];
+    if (last && last.phase === ph.phase && Math.abs(last.gph - ph.gph) < 1e-6) last.min += min;
+    else out.push({ phase: ph.phase, min, gph: ph.gph });
+  }
+  return out.filter((x) => x.min > 0.05);
+}
+
 // Remaining-flight timeline from a point in time, honoring an ETE update and any climb in progress.
 export function remainingSegs(flight, fromMs) {
   const etes = (flight.events || []).filter((e) => e.type === 'ete' && e.at <= fromMs).sort((a, b) => a.at - b.at);

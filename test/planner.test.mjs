@@ -140,3 +140,15 @@ test('actual climbs drive the burn rate, including a mid-flight climb', () => {
   const used = P.estimate(f, cfg, to + 101 * m).used - P.estimate(f, cfg, to + 90 * m).used;
   assert.ok(Math.abs(used - ((10 / 60) * 20 + (1 / 60) * tl.cruiseGph)) < 1e-6, used);
 });
+
+test('actual phases split the first LM period into taxi, climb and cruise', () => {
+  const cfg = P.resolveConfig(type);
+  const tl = P.buildTimeline(cfg, { taxiMin: 20, eteMin: 146, totalFuel: 39, climbMin: 12 });
+  const m = 60000, t0 = Date.UTC(2026, 9, 23, 20, 0), to = t0 + 20 * m;
+  const f = { engineStart: t0, takeoff: to, startLevels: { ...full }, startTank: 'LM', segs: tl.segments, cruiseGph: tl.cruiseGph, climbMin: 12,
+    events: [{ type: 'climb', at: to, gph: 20, until: to + 12 * m }, { type: 'switch', tank: 'RM', at: to + 48 * m }] };
+  const ph = P.actualPhases(f, t0, to + 48 * m);
+  assert.deepEqual(ph.map((x) => [x.phase, Math.round(x.min), x.gph]), [['taxi', 20, 4.5], ['climb', 12, 20], ['cruise', 36, tl.cruiseGph]]);
+  const fuel = ph.reduce((a, x) => a + (x.min / 60) * x.gph, 0);
+  assert.ok(Math.abs(fuel - (25 - P.estimate(f, cfg, to + 48 * m).levels.LM)) < 1e-6);
+});

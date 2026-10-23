@@ -169,3 +169,8 @@ hr.sep { border: none; border-top: 1px solid var(--line); margin: 2px 0; width: 
 button.gauge { background: none; border: none; padding: 4px 0; margin: 0; color: inherit; font: inherit; cursor: pointer; border-radius: 10px; -webkit-tap-highlight-color: transparent; }
 button.gauge:active .tube { transform: scale(0.97); }
 button.gauge:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.legsub.multi { display: flex; flex-direction: column; gap: 2px; }
+.legsub .ph { font-weight: 600; text-transform: capitalize; }
+.evrow.tap { cursor: pointer; }
+.evrow.tap:active { background: var(--s2); }
+.evrow.tap:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }

@@ -442,6 +442,13 @@ function tailForm() {
 // =====================================================================
 // PLAN
 // =====================================================================
+// Phase breakdown under a leg: one line per phase when a leg covers more than one.
+function phaseLines(list, untilLbl) {
+  const item = (x) => `<span class="ph ph-${x.phase}">${x.phase}</span> ${Math.round(x.min)}m @ ${f1(x.gph)} gph · ${f1((x.min / 60) * x.gph)} gal`;
+  if (list.length <= 1) return `<div class="legsub">${list.map(item).join('')} → until ${untilLbl}</div>`;
+  return `<div class="legsub multi">${list.map((x) => `<div>${item(x)}</div>`).join('')}<div>→ until ${untilLbl}</div></div>`;
+}
+
 function viewPlan() {
   const f = activeFlight();
   if (!f) return `<div class="top"><div><div class="kicker">Plan</div><h1>No flight</h1></div></div><div class="card empty">Set up a flight to build a plan.<br><br><a class="btn primary" href="#setup">Flight setup</a></div>`;
@@ -482,7 +489,7 @@ function viewPlan() {
     </div>
     <div class="legs">
       <div class="legrow head"><span>#</span><span>Tank</span><span>Start</span><span>Min</span><span>Gal</span><span>After</span><span class="right">L/R Δ</span><span></span></div>
-      ${pastRows.map((r) => `<div class="legrow past"><span>✓</span><span class="${sideCls(cfg, r.tank)}">${esc(r.tank)}</span><span>${fmtTimer(timerAt(f, r.start))}</span><span>${Math.round((r.end - r.start) / MIN)}</span><span>${f1(r.fuel)}</span><span>${f1(r.after)}</span><span class="right">actual</span><span></span></div>`).join('')}
+      ${pastRows.map((r) => `<div class="legrow past"><span>✓</span><span class="${sideCls(cfg, r.tank)}">${esc(r.tank)}</span><span>${fmtTimer(timerAt(f, r.start))}</span><span>${Math.round((r.end - r.start) / MIN)}</span><span>${f1(r.fuel)}</span><span>${f1(r.after)}</span><span class="right">actual</span><span></span>${phaseLines(P.actualPhases(f, r.start, r.end), fmtTimer(timerAt(f, r.end)))}</div>`).join('')}
       ${chk.rows.map((r, i) => {
         const bad = r.flags.filter((x) => ['empty', 'floor', 'imbalance', 'sequence'].includes(x));
         const isNow = active && nowMin >= r.startMin && nowMin < r.startMin + r.min;
@@ -495,7 +502,7 @@ function viewPlan() {
           <span class="${r.flags.includes('floor') || r.flags.includes('empty') ? 'flag' : ''}">${f1(r.after)}</span>
           <span class="right ${r.flags.includes('imbalance') ? 'flag' : Math.abs(r.imb) >= cfg.rules.imbalance.gal - 2 ? 'flag w' : 'mut'}">${f1(Math.abs(r.imb))}</span>
           <button class="iconbtn" style="width:28px;height:36px" aria-label="Delete leg ${i + 1}" data-act="delLeg" data-i="${i}">${ICON.del}</button>
-          <div class="legsub">${P.phasesBetween(p.segs, r.startMin, r.startMin + r.min).map((x) => `<span class="ph ph-${x.phase}">${x.phase} ${Math.round(x.min)}m${x.phase === 'taxi' ? '' : ` @ ${f1(x.gph)}`}</span>`).join(' · ')} → until ${f.engineStart ? fmtTimer(timerAt(f, MS(f, r.startMin + r.min))) : fmtTimer(r.startMin + r.min - f.taxiMin)}</div>
+          ${phaseLines(P.phasesBetween(p.segs, r.startMin, r.startMin + r.min), f.engineStart ? fmtTimer(timerAt(f, MS(f, r.startMin + r.min))) : fmtTimer(r.startMin + r.min - f.taxiMin))}
         </div>`;
       }).join('')}
       ${shortMin > 0.5 ? `<div class="legrow short"><span>!</span><span style="font-family:var(--sans);font-weight:600">short</span><span>${timeLbl(chk.planEnd)}</span><span>${Math.round(shortMin)}</span><span>${f1(shortFuel)}</span><span>—</span><span class="right">—</span><span></span></div>` : ''}
@@ -555,7 +562,7 @@ function viewFly() {
     ${f.engineStart ? `
       <button class="btn primary block" data-act="openSheet" data-sheet="switch">Record switch</button>
       <div class="row"><button class="btn outline grow" data-act="openSheet" data-sheet="ete">Update ETE</button><button class="btn grow" data-act="openSheet" data-sheet="check">Fuel check</button></div>
-      <button class="btn sm danger" data-act="openSheet" data-sheet="shutdown" style="align-self:flex-start">Shut down &amp; save flight</button>`
+      <div class="row between"><a class="btn sm" href="#log/${f.id}">Edit history</a><button class="btn sm danger" data-act="openSheet" data-sheet="shutdown">Shut down &amp; save flight</button></div>`
       : `<button class="btn primary block" data-act="openSheet" data-sheet="start">Start flight</button>
          <div class="mut small">Open this any time after takeoff: enter your flight timer and catch up on what you've done so far.</div>`}
   </div>`;
@@ -662,8 +669,13 @@ function renderFlyLive() {
 // =====================================================================
 // SHEETS (in-flight inputs)
 // =====================================================================
+const sheetFlight = () => (ui.sd && ui.sd.fid ? state.flights[ui.sd.fid] : activeFlight());
+// Takeoff edits use the same "timer reading now" logic as Start flight.
+const takeoffField = () => ui.sheet === 'start' || (ui.sheet === 'edit' && ui.sd.kind === 'takeoff');
+
 function openSheet(name, data = {}) {
-  const f = activeFlight();
+  ui.sd = { fid: data.fid };
+  const f = sheetFlight();
   const t = now();
   const tmode = takeoffOf(f) && f.engineStart ? timeMode() : 'clock';
   const toField = (ms) => (tmode === 'timer' ? dur(Math.max(0, timerAt(f, ms))) : hm(ms));
@@ -698,8 +710,8 @@ function renderSheet() {
       <h2>${esc(ui.sd.msg)}</h2><div class="row"><button class="btn grow" data-act="closeSheet">Cancel</button><button class="btn danger grow" data-act="confirmYes">${esc(ui.sd.yesLabel)}</button></div></div></div>`;
     return;
   }
-  const f = activeFlight();
-  const body = { switch: sheetSwitch, start: sheetStart, climb: sheetClimb, level: sheetLevel, check: sheetCheck, ete: sheetEte, shutdown: sheetShutdown }[ui.sheet];
+  const f = sheetFlight();
+  const body = { edit: sheetEdit, switch: sheetSwitch, start: sheetStart, climb: sheetClimb, level: sheetLevel, check: sheetCheck, ete: sheetEte, shutdown: sheetShutdown }[ui.sheet];
   if (!body || !f) { ui.sheet = null; host.innerHTML = ''; return; }
   const [title, inner] = body(f);
   host.innerHTML = `<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
@@ -708,11 +720,11 @@ function renderSheet() {
 }
 
 function timeField(id, label) {
-  const f = activeFlight();
-  const canToggle = ui.sheet === 'start' || !!(f && f.engineStart);
+  const f = sheetFlight();
+  const canToggle = takeoffField() || !!(f && f.engineStart);
   const tm = ui.sd.tmode;
   const lbl = typeof label === 'function' ? label(tm) : `${label} · ${tm === 'timer' ? 'flight timer' : 'local clock'}`;
-  const nowBtns = ui.sheet === 'start' && tm === 'timer' ? '' : `<button class="btn" style="width:60px;height:52px" data-act="sdMinus">−1m</button><button class="btn" style="width:64px;height:52px" data-act="sdNow">Now</button>`;
+  const nowBtns = takeoffField() && tm === 'timer' ? '' : `<button class="btn" style="width:60px;height:52px" data-act="sdMinus">−1m</button><button class="btn" style="width:64px;height:52px" data-act="sdNow">Now</button>`;
   return `<div class="field"><div class="row between"><label for="${id}">${lbl}</label>${canToggle ? `<button class="btn sm" style="height:32px" data-act="sdTmode">${tm === 'timer' ? 'Use clock' : 'Use timer'}</button>` : ''}</div>
   <div class="row"><input id="${id}" class="big key grow" data-fmt="hm" data-sd="at" value="${esc(ui.sd.at)}" inputmode="numeric" placeholder="${tm === 'timer' ? '1:12' : '15:48'}">${nowBtns}</div>
   <div class="z" id="sdAtOther"></div></div>`;
@@ -809,6 +821,97 @@ function sheetEte(f) {
     <button class="btn primary block" data-act="saveEte">Save &amp; rebuild plan</button>`];
 }
 
+const EV_LABEL = { takeoff: 'Takeoff', engine: 'Taxi', switch: 'Switch', climb: 'Climb', level: 'Level off', check: 'Fuel check', ete: 'ETE update', shutdown: 'Shutdown' };
+
+function sheetEdit(f) {
+  const k = ui.sd.kind, isNew = ui.sd.i < 0;
+  const title = `${isNew ? 'Add' : 'Edit'} ${EV_LABEL[k] || k}`;
+  let fields = '';
+  if (k === 'engine') {
+    fields = `<div class="field"><label for="sd-taxi">Taxi minutes before takeoff</label><input id="sd-taxi" class="big key" data-sd="taxi" value="${esc(ui.sd.taxi)}" inputmode="numeric"></div>
+      <div class="field"><label>Taxi tank</label><div class="tankpick">${f.cfg.tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span></button>`).join('')}</div></div>`;
+  } else {
+    fields = timeField('sd-at', k === 'takeoff' ? (tm) => (tm === 'timer' ? 'Flight timer right now' : 'Takeoff time (local clock)') : k === 'climb' ? 'Climb started' : k === 'switch' ? 'Switched at' : 'At');
+    if (k === 'takeoff') fields += `<label class="check"><input type="checkbox" data-sd="shift" ${ui.sd.shift ? 'checked' : ''}>Keep my other entries at the same flight timer readings</label>`;
+    if (k === 'switch') fields += `<div class="field"><label>Switched to</label><div class="tankpick">${f.cfg.tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span></button>`).join('')}</div></div>`;
+    if (k === 'climb') fields += `<div class="grid2"><div class="field"><label for="sd-len">Climb length</label><input id="sd-len" class="big" data-fmt="hm" data-sd="len" value="${esc(ui.sd.len)}" inputmode="numeric" placeholder="still climbing"></div>
+      <div class="field"><label for="sd-cgph">Climb gph</label><input id="sd-cgph" class="big" data-sd="gph" value="${esc(ui.sd.gph)}" inputmode="decimal"></div></div>`;
+    if (k === 'check' || k === 'shutdown') fields += `<div class="field"><label for="sd-used">GI 275 fuel used since start</label><input id="sd-used" class="big ${k === 'check' ? 'key' : ''}" data-sd="used" value="${esc(ui.sd.used)}" inputmode="decimal"></div>`;
+    if (k === 'ete') fields += `<div class="grid2"><div class="field"><label for="sd-ete">ETE</label><input id="sd-ete" class="big key" data-fmt="hm" data-sd="ete" value="${esc(ui.sd.ete)}" inputmode="numeric"></div>
+      <div class="field"><label for="sd-fuel">Fuel to it</label><input id="sd-fuel" class="big" data-sd="fuel" value="${esc(ui.sd.fuel)}" inputmode="decimal"></div></div>`;
+  }
+  const canDelete = !isNew && !['takeoff', 'engine'].includes(k);
+  return [title, `${fields}
+    <div id="sheetPreview"></div>
+    <div class="mut small">${f.status === 'active' ? 'Tank levels are recalculated from the corrected history and the rest of the plan is rebuilt.' : 'The saved flight is corrected.'}</div>
+    <div class="row">${canDelete ? '<button class="btn danger grow" data-act="deleteEvent">Delete</button>' : ''}<button class="btn primary grow" data-act="saveEdit">Save</button></div>`];
+}
+
+function openEdit(f, i, kind) {
+  const e = i >= 0 ? f.events[i] : { type: kind, at: now() };
+  ui.sheet = 'edit';
+  const tmode = e.type === 'takeoff' ? 'clock' : (f.engineStart ? timeMode() : 'clock');
+  ui.sd = { fid: f.id, i, kind: e.type, tmode, enteredAt: now(), atStamp: now() };
+  ui.sd.at = e.type === 'takeoff' ? hm(e.at) : (tmode === 'timer' ? dur(Math.max(0, timerAt(f, e.at))) : hm(e.at));
+  Object.assign(ui.sd, {
+    tank: e.tank || f.cfg.tanks[0].id,
+    len: e.until ? dur((e.until - e.at) / MIN) : '',
+    gph: String(e.gph || f.climbGph || f.cfg.burn.climbGph),
+    used: e.used != null ? String(e.used) : '',
+    ete: e.eteMin ? dur(e.eteMin) : '', fuel: e.fuelToDest ? String(e.fuelToDest) : '',
+    taxi: String(f.taxiMin), shift: true
+  });
+  renderSheet();
+}
+
+function afterHistoryEdit(f, reason) {
+  f.events.sort((a, b) => a.at - b.at);
+  if (f.status === 'active') rebuildFrom(f, now(), reason);
+  persist();
+}
+
+function saveEdit() {
+  const f = sheetFlight();
+  const k = ui.sd.kind, i = ui.sd.i;
+  if (k === 'engine') {
+    const taxi = num(ui.sd.taxi);
+    if (!(taxi >= 0)) return toast('Enter taxi minutes');
+    const to = takeoffOf(f);
+    f.taxiMin = taxi;
+    f.engineStart = to - taxi * MIN;
+    f.takeoff = to;
+    const tl = P.buildTimeline(f.cfg, { taxiMin: taxi, eteMin: f.eteMin, climbMin: f.climbMin, climbGph: f.climbGph, cruiseGph: f.cruiseGph });
+    f.segs = tl.segments; f.blockMin = tl.blockMin;
+    f.startTank = ui.sd.tank;
+    const ev = f.events[i]; if (ev) { ev.at = f.engineStart; ev.tank = ui.sd.tank; ev.edited = now(); }
+    closeSheet(); afterHistoryEdit(f, 'history edit'); toast('Taxi updated'); render(); return;
+  }
+  const t = sheetTime();
+  if (!isFinite(t)) return toast('Check the time');
+  if (k === 'takeoff') {
+    const taxi = f.taxiMin || 0;
+    const delta = t - takeoffOf(f);
+    f.takeoff = t; f.engineStart = t - taxi * MIN;
+    const ev = f.events[i]; ev.at = t; ev.edited = now();
+    const eng = f.events.find((e) => e.type === 'engine'); if (eng) eng.at = f.engineStart;
+    for (const e of f.events) {
+      if (e === ev || e === eng) continue;
+      if (ui.sd.shift || (e.type === 'climb' && e.initial)) { e.at += delta; if (e.until) e.until += delta; if (e.planned) e.planned.at += delta; }
+    }
+    if (ui.sd.shift && f.shutdown) f.shutdown += delta;
+    closeSheet(); afterHistoryEdit(f, 'history edit'); toast('Takeoff updated'); render(); return;
+  }
+  const ev = i >= 0 ? f.events[i] : { type: k, enteredAt: now(), added: true };
+  ev.at = t; ev.edited = now();
+  if (k === 'switch') ev.tank = ui.sd.tank;
+  if (k === 'climb') { const len = P.parseDur(ui.sd.len); ev.until = isFinite(len) && len > 0 ? t + len * MIN : null; ev.gph = num(ui.sd.gph) > 0 ? num(ui.sd.gph) : ev.gph || f.climbGph; }
+  if (k === 'check') { const u = num(ui.sd.used); if (!isFinite(u)) return toast('Enter fuel used'); ev.used = u; }
+  if (k === 'shutdown') { const u = num(ui.sd.used); ev.used = isFinite(u) ? u : null; f.shutdown = t; f.finalUsed = ev.used; }
+  if (k === 'ete') { const d = P.parseDur(ui.sd.ete); if (!isFinite(d)) return toast('Enter ETE'); ev.eteMin = d; ev.fuelToDest = num(ui.sd.fuel) || null; }
+  if (i < 0) f.events.push(ev);
+  closeSheet(); afterHistoryEdit(f, 'history edit'); toast(i < 0 ? 'Added' : 'Updated'); render();
+}
+
 function sheetClimb(f) {
   return ['Climb', `${timeField('sd-at', 'Climb started')}
     <div class="grid2">
@@ -837,9 +940,9 @@ function sheetShutdown(f) {
 
 // The moment the sheet's time field refers to. On the start sheet that is the takeoff time.
 function sheetTime() {
-  const f = activeFlight();
+  const f = sheetFlight();
   const tm = ui.sd.tmode;
-  if (ui.sheet === 'start') {
+  if (takeoffField()) {
     if (tm === 'timer') {
       const d = P.parseDur(ui.sd.at);
       return isFinite(d) ? (ui.sd.atStamp || now()) - d * MIN : NaN;
@@ -859,23 +962,23 @@ function sheetTime() {
 }
 
 function sheetFieldValue(ms) {
-  const f = activeFlight();
-  if (ui.sheet === 'start') return ui.sd.tmode === 'timer' ? dur(Math.max(0, (now() - ms) / MIN)) : hm(ms);
+  const f = sheetFlight();
+  if (takeoffField()) return ui.sd.tmode === 'timer' ? dur(Math.max(0, (now() - ms) / MIN)) : hm(ms);
   return ui.sd.tmode === 'timer' ? dur(Math.max(0, timerAt(f, ms))) : hm(ms);
 }
 
 function renderSheetPreview() {
   const box = $('#sheetPreview');
-  const f = activeFlight();
+  const f = sheetFlight();
   if (!box || !f) return;
   const t = sheetTime();
   const other = $('#sdAtOther');
   if (!isFinite(t)) {
     if (other) other.textContent = '';
-    box.innerHTML = ui.sd.at ? `<div class="issue warn">${ICON.warn}<div>${ui.sheet === 'start' ? 'Enter the flight timer (h:mm) or takeoff time.' : 'Enter a time between takeoff and now.'}</div></div>` : '';
+    box.innerHTML = ui.sd.at ? `<div class="issue warn">${ICON.warn}<div>${takeoffField() ? 'Enter the flight timer (h:mm) or takeoff time.' : 'Enter a time between takeoff and now.'}</div></div>` : '';
     return;
   }
-  if (other) other.innerHTML = ui.sheet === 'start'
+  if (other) other.innerHTML = takeoffField()
     ? `Takeoff ${hm(t)} · ${zt(t)}`
     : ui.sd.tmode === 'timer' ? `${hm(t)} local · ${zt(t)}` : (takeoffOf(f) ? `timer ${fmtTimer(timerAt(f, t))} · ${zt(t)}` : zt(t));
   if (ui.sheet === 'start') {
@@ -932,7 +1035,7 @@ function renderSheetPreview() {
 }
 
 function saveSheet(kind) {
-  const f = activeFlight();
+  const f = sheetFlight();
   const t = sheetTime();
   if (!isFinite(t)) return toast('Check the time');
   const enteredAt = ui.sd.enteredAt || now();
@@ -1040,7 +1143,8 @@ function viewLog() {
 function viewFlightDetail(f) {
   const s = flightSummary(f);
   const evName = (e) => ({ engine: `Taxi on ${e.tank}${e.assumed ? ` (${f.taxiMin} min)` : ''}`, takeoff: 'Takeoff', climb: `Climb @ ${f1(e.gph)}${e.until ? ` for ${dur((e.until - e.at) / MIN)}` : ''}`, level: 'Level off', switch: `Switch → ${e.tank}${e.catchup ? ' (catch-up)' : ''}`, check: `Fuel check · used ${f1(e.used)}`, ete: `ETE ${dur(e.eteMin)}${e.divert ? ' → ' + e.divert : ''}`, shutdown: 'Shutdown' }[e.type] || e.type);
-  const evs = [...f.events].sort((a, b) => a.at - b.at);
+  const evs = f.events.map((e, i) => ({ ...e, i })).sort((a, b) => a.at - b.at);
+  const editable = !!f.engineStart;
   return `<div class="top"><div><div class="kicker"><a href="#log">Log</a> · ${fmtDate(f.engineStart || f.createdAt)} · ${esc(f.tail)}</div><h1>${flightTitle(f)}</h1></div>${f.autoSaved ? '<span class="badge">auto-saved</span>' : ''}</div>
   <div class="stack">
     <div class="card"><div class="evrow head" style="padding:0;grid-template-columns:1.4fr 1fr 1fr"><span>ForeFlight vs actual</span><span>Plan</span><span>Actual</span></div>
@@ -1050,8 +1154,10 @@ function viewFlightDetail(f) {
       ${f.divert ? `<div class="mut small">Planned ${esc(f.to)}; diverted to ${esc(f.divert.ident)} at ${hm(f.divert.at)}.</div>` : ''}
     </div>
     <div class="legs"><div class="evrow head"><span>Event</span><span>Plan</span><span>Actual</span><span>Entered</span></div><div class="mut small" style="padding:6px 12px">Plan and actual are flight timer; entered is local clock.</div>
-      ${evs.length ? evs.map((e) => `<div class="evrow"><span>${esc(evName(e))}</span><span class="mut">${e.planned ? fmtTimer(timerAt(f, e.planned.at)) : '—'}</span><span style="color:${e.planned && Math.abs(e.at - e.planned.at) >= 2 * MIN ? 'var(--amber)' : ''}">${fmtTimer(timerAt(f, e.at))}</span><span class="mut">${e.enteredAt ? hm(e.enteredAt) : '—'}</span></div>`).join('') : '<div class="empty">No events yet.</div>'}
+      ${evs.length ? evs.map((e) => `<div class="evrow ${editable ? 'tap' : ''}" ${editable ? `role="button" tabindex="0" data-act="editEvent" data-fid="${f.id}" data-i="${e.i}" aria-label="Edit ${esc(evName(e))}"` : ''}><span>${esc(evName(e))}${e.edited || e.added ? ' <span class="badge" style="font-size:10px;padding:1px 5px">edited</span>' : ''}</span><span class="mut">${e.planned ? fmtTimer(timerAt(f, e.planned.at)) : '—'}</span><span style="color:${e.planned && Math.abs(e.at - e.planned.at) >= 2 * MIN ? 'var(--amber)' : ''}">${fmtTimer(timerAt(f, e.at))}</span><span class="mut">${e.enteredAt ? hm(e.enteredAt) : '—'}</span></div>`).join('') : '<div class="empty">No events yet.</div>'}
     </div>
+    ${editable ? `<div class="stack" style="gap:8px"><div class="mut small">Tap an entry to correct it. Add anything you missed:</div>
+      <div class="row wrap">${['switch', 'climb', 'level', 'check'].map((k) => `<button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="${k}">+ ${EV_LABEL[k]}</button>`).join('')}</div></div>` : ''}
     <div class="mut small">${f.planHistory?.length || 0} plan version${f.planHistory?.length === 1 ? '' : 's'} saved. Plan edits never count as actual events.</div>
     <div class="row"><button class="btn grow" data-act="exportCsv" data-id="${f.id}">Export CSV</button>${f.id === state.activeFlightId ? '' : `<button class="btn danger grow" data-act="deleteFlight" data-id="${f.id}">Delete</button>`}</div>
     ${f.status === 'draft' && f.id !== state.activeFlightId ? `<button class="btn outline" data-act="reopen" data-id="${f.id}">Make this the current flight</button>` : ''}
@@ -1271,6 +1377,14 @@ const actions = {
     if (el.dataset.tank === est.active) return toast(`Already on ${est.active}`);
     openSheet('switch', { tank: el.dataset.tank });
   },
+  saveEdit,
+  editEvent(el) { const f = state.flights[el.dataset.fid]; openEdit(f, +el.dataset.i); },
+  addEvent(el) { const f = state.flights[el.dataset.fid]; openEdit(f, -1, el.dataset.kind); },
+  deleteEvent() {
+    const f = sheetFlight(), i = ui.sd.i;
+    const e = f.events[i];
+    ask(`Delete this ${EV_LABEL[e.type] || e.type} entry?`, 'Delete', () => { f.events.splice(i, 1); if (e.type === 'shutdown') { f.shutdown = null; f.finalUsed = null; } afterHistoryEdit(f, 'history edit'); toast('Deleted'); render(); });
+  },
   saveStart: () => saveSheet('start'),
   saveClimb: () => saveSheet('climb'),
   saveLevel: () => saveSheet('level'),
@@ -1464,6 +1578,7 @@ document.addEventListener('change', (ev) => {
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter' && ev.target.id === 'flyTime') ev.target.blur();
   if (ev.key === 'Escape' && ui.sheet) closeSheet();
+  if ((ev.key === 'Enter' || ev.key === ' ') && ev.target.matches?.('[role=button][data-act]')) { ev.preventDefault(); ev.target.click(); }
 });
 
 async function importFile(input) {
