@@ -44,27 +44,31 @@ export function reserveGph(cfg) {
 
 // ---- burn timeline -------------------------------------------------------
 // Segments are in minutes from engine start. ForeFlight total fuel includes taxi.
-export function buildTimeline(cfg, { taxiMin = 0, eteMin = 0, totalFuel = 0 }) {
+// climbMin / climbGph / cruiseGph override the aircraft profile for this flight.
+// With no cruise override, cruise is derived so the total matches ForeFlight.
+export function buildTimeline(cfg, { taxiMin = 0, eteMin = 0, totalFuel = 0, climbMin: cm, climbGph: cg, cruiseGph: cr }) {
   const b = cfg.burn;
+  const climbGph = cg > 0 ? cg : b.climbGph;
   const taxiFuel = (taxiMin / 60) * b.ground;
-  const climbMin = Math.min(b.climbMin || 0, eteMin);
-  const climbFuel = (climbMin / 60) * b.climbGph;
+  const climbMin = Math.min(cm >= 0 && cm !== null && cm !== undefined && cm !== '' ? +cm : b.climbMin || 0, eteMin);
+  const climbFuel = (climbMin / 60) * climbGph;
   const cruiseMin = Math.max(0, eteMin - climbMin);
   let cruiseGph = b.cruise;
   let derived = false;
   let issue = null;
-  if (totalFuel > 0 && cruiseMin > 0) {
+  if (cr > 0) cruiseGph = +cr;
+  else if (totalFuel > 0 && cruiseMin > 0) {
     const f = totalFuel - taxiFuel - climbFuel;
     if (f > 0) { cruiseGph = f / (cruiseMin / 60); derived = true; }
     else issue = 'ForeFlight fuel is less than taxi + climb; using typical cruise.';
   }
   const segments = [
     { phase: 'taxi', start: 0, min: taxiMin, gph: b.ground },
-    { phase: 'climb', start: taxiMin, min: climbMin, gph: b.climbGph },
+    { phase: 'climb', start: taxiMin, min: climbMin, gph: climbGph },
     { phase: 'cruise', start: taxiMin + climbMin, min: cruiseMin, gph: cruiseGph }
   ].filter((s) => s.min > 0);
   const total = segments.reduce((a, s) => a + (s.min / 60) * s.gph, 0);
-  return { segments, taxiFuel, climbFuel, cruiseMin, cruiseGph, derived, issue, blockMin: taxiMin + eteMin, totalFuel: total };
+  return { segments, taxiFuel, climbMin, climbGph, climbFuel, cruiseMin, cruiseGph, derived, issue, blockMin: taxiMin + eteMin, totalFuel: total, ffTotal: totalFuel };
 }
 
 export function rateAt(segs, t) {
@@ -84,6 +88,22 @@ export function fuelBetween(segs, t0, t1) {
   }
   if (t1 > end) total += ((t1 - Math.max(t0, end)) / 60) * last.gph; // extrapolate past end
   return total;
+}
+
+// Which phases a stretch of the timeline covers, e.g. [{phase:'taxi',min:20},{phase:'climb',min:12}].
+export function phasesBetween(segs, t0, t1) {
+  const out = [];
+  for (const sg of segs) {
+    const a = Math.max(t0, sg.start), b = Math.min(t1, sg.start + sg.min);
+    if (b - a > 0.05) {
+      const last = out[out.length - 1];
+      if (last && last.phase === sg.phase && Math.abs(last.gph - sg.gph) < 1e-6) last.min += b - a;
+      else out.push({ phase: sg.phase, min: b - a, gph: sg.gph });
+    }
+  }
+  const end = segs.length ? segs[segs.length - 1].start + segs[segs.length - 1].min : 0;
+  if (t1 > end + 0.05 && segs.length) out.push({ phase: segs[segs.length - 1].phase, min: t1 - Math.max(t0, end), gph: segs[segs.length - 1].gph });
+  return out;
 }
 
 export function timeForFuel(segs, t0, fuel) {
@@ -272,18 +292,50 @@ export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requi
 }
 
 // ---- in-flight estimation ------------------------------------------------
-// flight: { engineStart(ms), startLevels, startTank, segs (min from engine start), events[] }
+// flight: { engineStart, takeoff, startLevels, startTank, segs (min from engine start), cruiseGph, climbMin, events[] }
 // events: {type:'switch', tank, at} | {type:'check', at, used} | {type:'ete', at, eteMin, fuelToDest, gph}
-export function rateAtMs(flight, ms) {
-  const etes = (flight.events || []).filter((e) => e.type === 'ete' && e.at <= ms).sort((a, b) => a.at - b.at);
-  const lastEte = etes[etes.length - 1];
-  if (lastEte) {
-    if (lastEte.fuelToDest > 0 && lastEte.eteMin > 0) return lastEte.fuelToDest / (lastEte.eteMin / 60);
-    if (lastEte.gph > 0) return lastEte.gph;
-  }
-  const t = (ms - flight.engineStart) / MS_MIN;
-  return rateAt(flight.segs, t);
+//         {type:'climb', at, gph, until?} (until = expected/actual level-off) | {type:'level', at}
+const takeoffMs = (f) => f.takeoff ?? (f.engineStart + ((f.segs.find((s) => s.phase === 'taxi') || { min: 0 }).min) * MS_MIN);
+
+// The climb in progress at ms, if any.
+export function activeClimb(flight, ms) {
+  const evs = (flight.events || []).filter((e) => e.at <= ms && (e.type === 'climb' || e.type === 'level')).sort((a, b) => a.at - b.at);
+  const last = evs[evs.length - 1];
+  if (!last || last.type !== 'climb') return null;
+  if (last.until && ms >= last.until) return null;
+  return last;
 }
+
+function lastEteRate(flight, ms) {
+  const etes = (flight.events || []).filter((e) => e.type === 'ete' && e.at <= ms).sort((a, b) => a.at - b.at);
+  const e = etes[etes.length - 1];
+  if (!e) return null;
+  if (e.fuelToDest > 0 && e.eteMin > 0) return { at: e.at, gph: e.fuelToDest / (e.eteMin / 60) };
+  if (e.gph > 0) return { at: e.at, gph: e.gph };
+  return null;
+}
+
+export function cruiseRateAt(flight, ms) {
+  const e = lastEteRate(flight, ms);
+  if (e) return e.gph;
+  return flight.cruiseGph || rateAt(flight.segs, Infinity);
+}
+
+// Burn rate and phase at a moment.
+export function phaseAt(flight, ms) {
+  const to = takeoffMs(flight);
+  if (ms < to) return { phase: 'taxi', gph: rateAt(flight.segs, (ms - flight.engineStart) / MS_MIN) };
+  const c = activeClimb(flight, ms);
+  if (c) return { phase: 'climb', gph: c.gph, since: c.at, until: c.until || null };
+  const hasClimbEvents = (flight.events || []).some((e) => e.type === 'climb' && e.at <= ms);
+  const e = lastEteRate(flight, ms);
+  if (hasClimbEvents || e) return { phase: 'cruise', gph: cruiseRateAt(flight, ms) };
+  const t = (ms - flight.engineStart) / MS_MIN;
+  const seg = flight.segs.find((s) => t >= s.start - EPS && t < s.start + s.min - EPS) || flight.segs[flight.segs.length - 1];
+  return { phase: seg ? seg.phase : 'cruise', gph: rateAt(flight.segs, t) };
+}
+
+export function rateAtMs(flight, ms) { return phaseAt(flight, ms).gph; }
 
 export function estimate(flight, cfg, T) {
   const ids = cfg.tanks.map((x) => x.id);
@@ -293,7 +345,8 @@ export function estimate(flight, cfg, T) {
   let sinceCheck = Object.fromEntries(ids.map((i) => [i, 0]));
   const evs = (flight.events || []).filter((e) => e.at <= T && e.at >= flight.engineStart).sort((a, b) => a.at - b.at || (a.type === 'switch' ? -1 : 1));
   const segBreaks = flight.segs.map((s) => flight.engineStart + s.start * MS_MIN).concat(flight.segs.map((s) => flight.engineStart + (s.start + s.min) * MS_MIN));
-  const points = [...new Set([flight.engineStart, T, ...evs.map((e) => e.at), ...segBreaks.filter((x) => x > flight.engineStart && x < T)])].sort((a, b) => a - b);
+  const untils = evs.filter((e) => e.until).map((e) => e.until);
+  const points = [...new Set([flight.engineStart, T, takeoffMs(flight), ...evs.map((e) => e.at), ...untils, ...segBreaks])].filter((x) => x >= flight.engineStart && x <= T).sort((a, b) => a - b);
   let ei = 0;
   for (let p = 0; p < points.length; p++) {
     const a = points[p];
@@ -311,28 +364,35 @@ export function estimate(flight, cfg, T) {
     }
     if (p === points.length - 1) break;
     const b = points[p + 1];
-    if (b > T) break;
     const burn = (rateAtMs(flight, a) * (b - a)) / 3.6e6;
     lv[active] -= burn;
     sinceCheck[active] += burn;
     used += burn;
   }
   const total = ids.reduce((x, i) => x + lv[i], 0);
-  return { levels: lv, active, used, total, rate: rateAtMs(flight, T) };
+  return { levels: lv, active, used, total, rate: rateAtMs(flight, T), phase: phaseAt(flight, T) };
 }
 
-// Remaining-flight timeline from a point in time: either from the latest ETE update or the plan.
+// Remaining-flight timeline from a point in time, honoring an ETE update and any climb in progress.
 export function remainingSegs(flight, fromMs) {
   const etes = (flight.events || []).filter((e) => e.type === 'ete' && e.at <= fromMs).sort((a, b) => a.at - b.at);
   const last = etes[etes.length - 1];
   const nowMin = (fromMs - flight.engineStart) / MS_MIN;
-  if (last) {
-    const arrMin = (last.at - flight.engineStart) / MS_MIN + last.eteMin;
-    const gph = rateAtMs(flight, fromMs);
-    return { segs: [{ phase: 'cruise', start: nowMin, min: Math.max(0, arrMin - nowMin), gph }], startMin: nowMin, endMin: Math.max(nowMin, arrMin) };
+  const planEnd = flight.segs.reduce((a, s) => Math.max(a, s.start + s.min), 0);
+  const endMin = Math.max(nowMin, last ? (last.at - flight.engineStart) / MS_MIN + last.eteMin : planEnd);
+  const climbing = activeClimb(flight, fromMs);
+  const hasClimbEvents = (flight.events || []).some((e) => e.type === 'climb' && e.at <= fromMs);
+  if (!last && !climbing && !hasClimbEvents) return { segs: flight.segs, startMin: nowMin, endMin };
+  const cruise = cruiseRateAt(flight, fromMs);
+  const segs = [];
+  let t = nowMin;
+  if (climbing) {
+    const climbEnd = climbing.until || climbing.at + (flight.climbMin || 10) * MS_MIN;
+    const cEnd = Math.min(endMin, Math.max(nowMin, (climbEnd - flight.engineStart) / MS_MIN));
+    if (cEnd > t) { segs.push({ phase: 'climb', start: t, min: cEnd - t, gph: climbing.gph }); t = cEnd; }
   }
-  const end = flight.segs.reduce((a, s) => Math.max(a, s.start + s.min), 0);
-  return { segs: flight.segs, startMin: nowMin, endMin: Math.max(nowMin, end) };
+  segs.push({ phase: 'cruise', start: t, min: Math.max(0, endMin - t), gph: cruise });
+  return { segs, startMin: nowMin, endMin };
 }
 
 // ---- time helpers --------------------------------------------------------

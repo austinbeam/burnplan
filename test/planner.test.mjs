@@ -103,3 +103,40 @@ test('time parsing', () => {
   const t = P.parseClock('00:10', ref);
   assert.equal(t - ref, 20 * 60000);
 });
+
+test('per-flight climb and cruise overrides', () => {
+  const cfg = P.resolveConfig(type);
+  const tl = P.buildTimeline(cfg, { taxiMin: 20, eteMin: 146, totalFuel: 39, climbMin: 12, climbGph: 22 });
+  assert.equal(tl.climbMin, 12);
+  assert.ok(Math.abs(tl.climbFuel - 4.4) < 1e-6);
+  assert.ok(Math.abs(tl.totalFuel - 39) < 1e-6, 'cruise derived so total matches ForeFlight');
+  const tl2 = P.buildTimeline(cfg, { taxiMin: 20, eteMin: 146, totalFuel: 39, climbMin: 12, cruiseGph: 14 });
+  assert.equal(tl2.cruiseGph, 14);
+  assert.ok(Math.abs(tl2.totalFuel - (1.5 + 4 + (134 / 60) * 14)) < 1e-6);
+  // phases of the first leg: LM taxi 20 + climb 12 + cruise to +0:48 (68 min from engine start)
+  const ph = P.phasesBetween(tl.segments, 0, 68);
+  assert.deepEqual(ph.map((x) => [x.phase, Math.round(x.min)]), [['taxi', 20], ['climb', 12], ['cruise', 36]]);
+});
+
+test('actual climbs drive the burn rate, including a mid-flight climb', () => {
+  const cfg = P.resolveConfig(type);
+  const tl = P.buildTimeline(cfg, { taxiMin: 20, eteMin: 146, totalFuel: 39 });
+  const m = 60000, t0 = Date.UTC(2026, 9, 23, 20, 0), to = t0 + 20 * m;
+  const f = { engineStart: t0, takeoff: to, startLevels: { ...full }, startTank: 'LM', segs: tl.segments, cruiseGph: tl.cruiseGph, climbMin: 14,
+    events: [{ type: 'climb', at: to, gph: 20, until: to + 12 * m }] };
+  assert.equal(P.phaseAt(f, to + 5 * m).phase, 'climb');
+  assert.equal(P.phaseAt(f, to + 13 * m).phase, 'cruise');
+  const e1 = P.estimate(f, cfg, to + 48 * m);
+  const expect = 1.5 + (12 / 60) * 20 + (36 / 60) * tl.cruiseGph;
+  assert.ok(Math.abs(e1.used - expect) < 1e-6, `${e1.used} vs ${expect}`);
+  // mid-flight climb, still climbing
+  f.events.push({ type: 'climb', at: to + 90 * m, gph: 20 });
+  assert.equal(P.phaseAt(f, to + 95 * m).phase, 'climb');
+  const rs = P.remainingSegs(f, to + 95 * m);
+  assert.equal(rs.segs[0].phase, 'climb');
+  assert.equal(Math.round(rs.segs[0].min), 9); // assumed 14-minute climb
+  f.events.push({ type: 'level', at: to + 100 * m });
+  assert.equal(P.phaseAt(f, to + 101 * m).phase, 'cruise');
+  const used = P.estimate(f, cfg, to + 101 * m).used - P.estimate(f, cfg, to + 90 * m).used;
+  assert.ok(Math.abs(used - ((10 / 60) * 20 + (1 / 60) * tl.cruiseGph)) < 1e-6, used);
+});

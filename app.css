@@ -161,3 +161,8 @@ details > summary { cursor: pointer; font-size: 14px; font-weight: 600; min-heig
 .ovr { display: grid; grid-template-columns: 1fr 120px; gap: 8px; align-items: center; font-size: 14px; }
 .ovr input, .ovr select { height: 40px; font-size: 15px; }
 hr.sep { border: none; border-top: 1px solid var(--line); margin: 2px 0; width: 100%; }
+:root { --ph-taxi: #4A5262; --ph-climb: #B48EE8; --ph-cruise: #2B3D4F; }
+.phasebar { height: 6px; margin-bottom: 4px; }
+.legsub { grid-column: 1 / -1; font-family: var(--sans); font-size: 11px; color: var(--mut); padding: 0 0 6px 26px; margin-top: -4px; }
+.ph-climb { color: var(--ph-climb); }
+.ph-taxi { color: var(--mut); }
