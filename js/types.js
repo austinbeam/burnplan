@@ -36,6 +36,7 @@ export const BUILTIN_TYPES = [
       landBalanced: true
     },
     alerts: { preMin: 2, sound: true, vibrate: true },
+    landing: { graceMin: 15 },   // after expected arrival + this, assume landed and stop the burn estimate
     idleHours: 3
   }
 ];

@@ -122,7 +122,7 @@ test('actual climbs drive the burn rate, including a mid-flight climb', () => {
   const cfg = P.resolveConfig(type);
   const tl = P.buildTimeline(cfg, { taxiMin: 20, eteMin: 146, totalFuel: 39 });
   const m = 60000, t0 = Date.UTC(2026, 9, 23, 20, 0), to = t0 + 20 * m;
-  const f = { engineStart: t0, takeoff: to, startLevels: { ...full }, startTank: 'LM', segs: tl.segments, cruiseGph: tl.cruiseGph, climbMin: 14,
+  const f = { engineStart: t0, takeoff: to, startLevels: { ...full, LM: 100 }, startTank: 'LM', segs: tl.segments, cruiseGph: tl.cruiseGph, climbMin: 14,
     events: [{ type: 'climb', at: to, gph: 20, until: to + 12 * m }] };
   assert.equal(P.phaseAt(f, to + 5 * m).phase, 'climb');
   assert.equal(P.phaseAt(f, to + 13 * m).phase, 'cruise');
@@ -151,4 +151,28 @@ test('actual phases split the first LM period into taxi, climb and cruise', () =
   assert.deepEqual(ph.map((x) => [x.phase, Math.round(x.min), x.gph]), [['taxi', 20, 4.5], ['climb', 12, 20], ['cruise', 36, tl.cruiseGph]]);
   const fuel = ph.reduce((a, x) => a + (x.min / 60) * x.gph, 0);
   assert.ok(Math.abs(fuel - (25 - P.estimate(f, cfg, to + 48 * m).levels.LM)) < 1e-6);
+});
+
+test('estimate never burns a tank below empty, and stops at landing/shutdown', () => {
+  const cfg = P.resolveConfig(type);
+  const tl = P.buildTimeline(cfg, { taxiMin: 20, eteMin: 146, totalFuel: 39 });
+  const m = 60000, t0 = Date.UTC(2026, 9, 23, 20, 0);
+  const f = { engineStart: t0, takeoff: t0 + 20 * m, startLevels: { LT: 3, LM: 25, RM: 25, RT: 17 }, startTank: 'LT', segs: tl.segments, cruiseGph: tl.cruiseGph, events: [] };
+  const e = P.estimate(f, cfg, t0 + 120 * m);
+  assert.equal(e.levels.LT, 0);
+  assert.ok(e.empty && e.empty.tank === 'LT');
+  assert.ok(Math.abs(e.used - 3) < 1e-6, 'only what was in the tank');
+  // recording the missed switch resumes burning on the new tank
+  f.events.push({ type: 'switch', tank: 'LM', at: e.empty.at });
+  const e2 = P.estimate(f, cfg, t0 + 120 * m);
+  assert.equal(e2.empty, null);
+  assert.ok(e2.levels.LM < 25);
+  // freeze at assumed landing
+  f.freezeAt = t0 + 90 * m;
+  const e3 = P.estimate(f, cfg, t0 + 300 * m), e4 = P.estimate(f, cfg, t0 + 90 * m);
+  assert.ok(Math.abs(e3.total - e4.total) < 1e-9);
+  assert.ok(e3.frozen);
+  delete f.freezeAt; f.shutdown = t0 + 100 * m;
+  assert.ok(Math.abs(P.estimate(f, cfg, t0 + 500 * m).total - P.estimate(f, cfg, t0 + 100 * m).total) < 1e-9);
+  assert.equal(P.arrivalOf(f), t0 + 166 * m);
 });

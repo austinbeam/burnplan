@@ -22,7 +22,7 @@ export function deepMerge(target, src) {
 export function resolveConfig(type, tail, flightOverrides) {
   const cfg = JSON.parse(JSON.stringify(type));
   const ov = (tail && tail.overrides) || {};
-  deepMerge(cfg, { burn: ov.burn, rules: ov.rules, alerts: ov.alerts, idleHours: ov.idleHours });
+  deepMerge(cfg, { burn: ov.burn, rules: ov.rules, alerts: ov.alerts, landing: ov.landing, idleHours: ov.idleHours });
   if (ov.capacities) for (const t of cfg.tanks) if (ov.capacities[t.id] > 0) t.capacity = +ov.capacities[t.id];
   if (flightOverrides) deepMerge(cfg, flightOverrides);
   return cfg;
@@ -337,8 +337,12 @@ export function phaseAt(flight, ms) {
 
 export function rateAtMs(flight, ms) { return phaseAt(flight, ms).gph; }
 
-export function estimate(flight, cfg, T) {
+// Levels at time T0. Burning stops at shutdown or at an assumed landing (freezeAt), and a tank is
+// never burned below empty: if the selected tank runs dry the estimate stops and reports \`empty\`.
+export function estimate(flight, cfg, T0) {
+  const T = Math.min(T0, flight.shutdown || Infinity, flight.freezeAt || Infinity);
   const ids = cfg.tanks.map((x) => x.id);
+  let empty = null;
   const lv = { ...flight.startLevels };
   let active = flight.startTank;
   let used = 0;
@@ -352,7 +356,7 @@ export function estimate(flight, cfg, T) {
     const a = points[p];
     while (ei < evs.length && evs[ei].at <= a) {
       const e = evs[ei++];
-      if (e.type === 'switch') active = e.tank;
+      if (e.type === 'switch') { active = e.tank; empty = null; }
       else if (e.type === 'check' && e.used >= 0) {
         const delta = e.used - used;
         const tot = Object.values(sinceCheck).reduce((x, y) => x + y, 0);
@@ -364,13 +368,20 @@ export function estimate(flight, cfg, T) {
     }
     if (p === points.length - 1) break;
     const b = points[p + 1];
-    const burn = (rateAtMs(flight, a) * (b - a)) / 3.6e6;
+    const rate = rateAtMs(flight, a);
+    const want = (rate * (b - a)) / 3.6e6;
+    const avail = Math.max(0, lv[active]);
+    let burn = want;
+    if (want > avail + EPS) {
+      burn = avail;
+      if (!empty) empty = { tank: active, at: rate > 0 ? a + (avail / rate) * 3.6e6 : a };
+    }
     lv[active] -= burn;
     sinceCheck[active] += burn;
     used += burn;
   }
   const total = ids.reduce((x, i) => x + lv[i], 0);
-  return { levels: lv, active, used, total, rate: rateAtMs(flight, T), phase: phaseAt(flight, T) };
+  return { levels: lv, active, used, total, rate: empty ? 0 : rateAtMs(flight, T), phase: phaseAt(flight, T), empty, frozen: !!flight.freezeAt && T0 > flight.freezeAt && !flight.shutdown, stoppedAt: T < T0 ? T : null };
 }
 
 // Phases actually flown between two moments (taxi / climb / cruise), using takeoff, climb and level events.
@@ -390,6 +401,15 @@ export function actualPhases(flight, a, b) {
     else out.push({ phase: ph.phase, min, gph: ph.gph });
   }
   return out.filter((x) => x.min > 0.05);
+}
+
+// Expected landing time from the latest ETE update, otherwise from the plan.
+export function arrivalOf(flight) {
+  const etes = (flight.events || []).filter((e) => e.type === 'ete').sort((a, b) => a.at - b.at);
+  const last = etes[etes.length - 1];
+  if (last) return last.at + last.eteMin * MS_MIN;
+  const end = flight.segs.reduce((a, s) => Math.max(a, s.start + s.min), 0);
+  return flight.engineStart + end * MS_MIN;
 }
 
 // Remaining-flight timeline from a point in time, honoring an ETE update and any climb in progress.

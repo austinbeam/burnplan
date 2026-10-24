@@ -126,8 +126,31 @@ function flightTitle(f) {
 
 function arrivalMs(f) {
   if (!f.engineStart) return null;
-  const rs = P.remainingSegs(f, Math.max(now(), f.engineStart));
-  return MS(f, rs.endMin);
+  return Math.max(P.arrivalOf(f), f.snoozeUntil || 0);
+}
+const graceMin = (f) => f.cfg.landing?.graceMin ?? 15;
+
+// Landing: alert at the expected arrival; after the grace period assume landed and freeze the levels.
+function checkLanding() {
+  const f = activeFlight();
+  if (!f || f.status !== 'active' || !f.engineStart || f.shutdown) return;
+  const t = now();
+  const arr = arrivalMs(f);
+  const key = `${f.id}:land:${Math.round(arr / 1000)}`;
+  if (t >= arr && t - arr < graceMin(f) * MIN && !ui.fired.has(key) && !f.freezeAt) {
+    ui.fired.add(key);
+    ui.alert = { kind: 'land', at: arr };
+    renderAlert();
+    if (f.cfg.alerts?.sound !== false) beep(2);
+    if (f.cfg.alerts?.vibrate !== false && navigator.vibrate) navigator.vibrate([300, 150, 300]);
+  }
+  if (!f.freezeAt && t >= arr + graceMin(f) * MIN) {
+    f.freezeAt = arr;
+    persist();
+    ui.alert = { kind: 'landed', at: arr };
+    renderAlert();
+    if (ui.route === 'fly') renderFlyLive();
+  }
 }
 
 // ---------- alerts / wake lock / sound ----------
@@ -183,6 +206,17 @@ function checkAlerts() {
     }
   }
   if (ui.alert && ui.alert.kind === 'pre' && t >= ui.alert.at) { ui.alert = null; renderAlert(); }
+  if (est.empty) {
+    const key = `${f.id}:empty:${est.empty.tank}:${Math.round(est.empty.at / 60000)}`;
+    if (!ui.fired.has(key)) {
+      ui.fired.add(key);
+      ui.alert = { kind: 'empty', tank: est.empty.tank, at: est.empty.at };
+      renderAlert();
+      if (f.cfg.alerts?.sound !== false) beep(3);
+      if (f.cfg.alerts?.vibrate !== false && navigator.vibrate) navigator.vibrate([400, 150, 400]);
+    }
+  }
+  checkLanding();
 }
 
 function renderAlert() {
@@ -192,6 +226,21 @@ function renderAlert() {
   if (!a) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
   const mins = Math.max(0, Math.round((a.at - now()) / MIN));
   bar.classList.remove('hidden');
+  const f = activeFlight();
+  if (a.kind === 'land' || a.kind === 'landed') {
+    bar.innerHTML = `<div class="inner ${a.kind === 'land' ? 'pre' : ''}" role="alert">
+      <div class="row between"><span>${a.kind === 'land' ? 'Expected landing' : 'Assumed landed · levels frozen'}</span><span>${timerZ(f, a.at)}</span></div>
+      <div class="big">${a.kind === 'land' ? 'Shut down when parked' : 'Landed?'}</div>
+      <div class="row"><button class="btn grow" data-act="alertShutdown">Shut down</button><button class="btn grow" data-act="${a.kind === 'land' ? 'alertDismiss' : 'stillFlying'}">${a.kind === 'land' ? 'Dismiss' : 'Still flying'}</button></div></div>`;
+    return;
+  }
+  if (a.kind === 'empty') {
+    bar.innerHTML = `<div class="inner" role="alert">
+      <div class="row between"><span>Missed switch?</span><span>${timerZ(f, a.at)}</span></div>
+      <div class="big">${esc(a.tank)} would be empty</div>
+      <div class="row"><button class="btn grow" data-act="emptySwitch">Record switch</button><button class="btn grow" data-act="alertDismiss">Dismiss</button></div></div>`;
+    return;
+  }
   bar.innerHTML = `<div class="inner ${a.kind === 'pre' ? 'pre' : ''}" role="alert">
     <div class="row between"><span>${a.kind === 'pre' ? `Switch in ${mins} min` : 'Switch tanks now'}</span><span>${timerZ(activeFlight(), a.at)}</span></div>
     <div class="big">${esc(a.from)} → ${esc(a.tank)}</div>
@@ -205,14 +254,19 @@ function checkIdle() {
   if (!f) return false;
   const idleH = f.cfg.idleHours || 3;
   let base = state.lastInputAt || 0;
-  if (f.status === 'active') { const arr = arrivalMs(f); if (arr) base = Math.max(base, arr); }
+  if (f.status === 'active') { const arr = arrivalMs(f); if (arr) base = Math.max(base, arr + graceMin(f) * MIN); }
   if (now() - base < idleH * HOUR) return false;
-  if (f.status === 'active') { f.status = 'closed'; f.autoSaved = true; f.shutdown = f.shutdown || Math.max(state.lastInputAt, f.engineStart); }
+  if (f.status === 'active') {
+    const landed = f.freezeAt || (arrivalMs(f) < now() ? arrivalMs(f) : Math.max(state.lastInputAt, f.engineStart));
+    f.status = 'closed'; f.autoSaved = true; f.autoEnded = true;
+    f.shutdown = f.shutdown || landed;
+    if (!f.events.some((e) => e.type === 'shutdown')) f.events.push({ type: 'shutdown', at: f.shutdown, enteredAt: now(), assumed: true, used: null });
+  }
   else { f.status = 'saved'; f.autoSaved = true; }
   state.activeFlightId = null;
   ui.draft = null;
   persist();
-  toast(`Previous flight auto-saved after ${idleH} h idle`);
+  toast(f.autoEnded ? 'Previous flight ended at its assumed landing time. Check it in the Log.' : `Previous flight auto-saved after ${idleH} h idle`);
   go('setup');
   return true;
 }
@@ -612,7 +666,7 @@ function viewFly() {
     ${f.engineStart ? `
       <button class="btn primary block" data-act="openSheet" data-sheet="switch">Record switch</button>
       <div class="row"><button class="btn outline grow" data-act="openSheet" data-sheet="ete">Update ETE</button><button class="btn grow" data-act="openSheet" data-sheet="check">Fuel check</button></div>
-      <div class="row between"><a class="btn sm" href="#log/${f.id}">Edit history</a><button class="btn sm danger" data-act="openSheet" data-sheet="shutdown">Shut down &amp; save flight</button></div>`
+      <div class="row"><a class="btn grow" href="#log/${f.id}">Edit history</a><button class="btn danger grow" data-act="openSheet" data-sheet="shutdown">End flight</button></div>`
       : `<button class="btn primary block" data-act="openSheet" data-sheet="start">Start flight</button>
          <div class="mut small">Open this any time after takeoff: enter your flight timer and catch up on what you've done so far.</div>`}
   </div>`;
@@ -659,8 +713,16 @@ function renderFlyLive() {
   const el = $('#elapsed'); if (el && f.engineStart) el.textContent = fmtTimer(timerAt(f, T));
   const z = $('#flyZ'); if (z) z.textContent = flyMode(f) === 'timer' ? `${hm(T)} · ${zt(T)}` : zt(T);
 
+  let landedCard = '';
+  if (started && est.frozen) {
+    landedCard = `<div class="issue warn" style="flex-direction:column;gap:8px"><div class="row" style="gap:10px">${ICON.warn}<div><b>Assumed landed at ${fmtTimer(timerAt(f, f.freezeAt))}</b> (${hm(f.freezeAt)}). Tank levels are frozen there so nothing keeps burning.</div></div>
+      <div class="row"><button class="btn primary grow" style="height:48px;font-size:15px" data-act="alertShutdown">Shut down</button><button class="btn grow" data-act="stillFlying">Still flying</button></div></div>`;
+  } else if (started && est.empty) {
+    landedCard = `<div class="issue error" style="flex-direction:column;gap:8px"><div class="row" style="gap:10px">${ICON.warn}<div><b>${esc(est.empty.tank)} would be empty at ${fmtTimer(timerAt(f, est.empty.at))}</b> (${hm(est.empty.at)}), so a switch was probably missed. The estimate stops burning until you record it.</div></div>
+      <button class="btn primary" style="height:48px;font-size:15px" data-act="emptySwitch">Record the switch</button></div>`;
+  }
   let next = '';
-  if (started) {
+  if (started && !est.frozen) {
     const legs = planAbs(f);
     let idx = legs.findIndex((l) => T >= l.start && T < l.end);
     let due = null;
@@ -681,7 +743,7 @@ function renderFlyLive() {
   }
 
   let dest = '';
-  if (started) {
+  if (started && !est.frozen) {
     const rs = P.remainingSegs(f, T);
     const need = P.fuelBetween(rs.segs, rs.startMin, rs.endMin);
     const req = requiredLanding(f, T);
@@ -713,7 +775,7 @@ function renderFlyLive() {
         ${ph.phase === 'taxi' ? '' : climbing ? '<button class="btn outline" data-act="openSheet" data-sheet="level">Level off</button>' : '<button class="btn" data-act="openSheet" data-sheet="climb">Climb</button>'}
       </div>`;
     })() : ''}
-    <div class="stack" style="margin-top:14px">${next}${dest}</div>`;
+    <div class="stack" style="margin-top:14px">${landedCard}${next}${dest}</div>`;
 }
 
 // =====================================================================
@@ -742,10 +804,11 @@ function openSheet(name, data = {}) {
     const rs = P.remainingSegs(f, t);
     Object.assign(sd, { at: toField(t), ete: '', fuel: '', gph: '', altFuel: f.alt?.on ? String(f.alt.fuel || '') : '', divert: false, ident: '', prevEte: rs.endMin - rs.startMin });
   }
-  if (name === 'shutdown') Object.assign(sd, { at: toField(t), used: '' });
+  if (name === 'shutdown') Object.assign(sd, { at: toField(f.freezeAt || t), used: '' });
   if (name === 'climb') Object.assign(sd, { at: toField(t), len: '', gph: String(f.climbGph || f.cfg.burn.climbGph), rebuild: true });
   if (name === 'level') Object.assign(sd, { at: toField(t), rebuild: true });
   if (name === 'start') sd.climb = dur(f.climbMin ?? f.cfg.burn.climbMin);
+  if (data.atMs) { sd.at = toField(data.atMs); }
   ui.sheet = name; ui.sd = sd;
   renderSheet();
 }
@@ -956,7 +1019,7 @@ function saveEdit() {
   if (k === 'switch') ev.tank = ui.sd.tank;
   if (k === 'climb') { const len = P.parseDur(ui.sd.len); ev.until = isFinite(len) && len > 0 ? t + len * MIN : null; ev.gph = num(ui.sd.gph) > 0 ? num(ui.sd.gph) : ev.gph || f.climbGph; }
   if (k === 'check') { const u = num(ui.sd.used); if (!isFinite(u)) return toast('Enter fuel used'); ev.used = u; }
-  if (k === 'shutdown') { const u = num(ui.sd.used); ev.used = isFinite(u) ? u : null; f.shutdown = t; f.finalUsed = ev.used; }
+  if (k === 'shutdown') { const u = num(ui.sd.used); ev.used = isFinite(u) ? u : null; ev.assumed = false; f.shutdown = t; f.finalUsed = ev.used; f.autoEnded = false; }
   if (k === 'ete') { const d = P.parseDur(ui.sd.ete); if (!isFinite(d)) return toast('Enter ETE'); ev.eteMin = d; ev.fuelToDest = num(ui.sd.fuel) || null; }
   if (i < 0) f.events.push(ev);
   closeSheet(); afterHistoryEdit(f, 'history edit'); toast(i < 0 ? 'Added' : 'Updated'); render();
@@ -982,10 +1045,17 @@ function sheetLevel(f) {
 }
 
 function sheetShutdown(f) {
-  return ['Shut down', `${timeField('sd-at', 'Shutdown time', ui.sd.at)}
+  const arr = arrivalMs(f);
+  const picks = [];
+  if (f.freezeAt) picks.push([f.freezeAt, `Assumed landing ${fmtTimer(timerAt(f, f.freezeAt))}`]);
+  else if (arr && arr < now()) picks.push([arr, `Expected landing ${fmtTimer(timerAt(f, arr))}`]);
+  picks.push([now(), 'Now']);
+  return ['End flight', `${timeField('sd-at', 'Shut down at')}
+    <div class="row wrap">${picks.map(([ms, label]) => `<button class="btn sm" data-act="sdAtMs" data-ms="${ms}">${esc(label)}</button>`).join('')}</div>
+    <div class="mut small">Enter the flight timer reading (or clock time) when you actually shut down; it can be in the past. Fuel stops burning there.</div>
     <div class="field"><label for="sd-used">GI 275 total fuel used (optional)</label><input id="sd-used" class="big" data-sd="used" value="${esc(ui.sd.used)}" inputmode="decimal"></div>
-    <div class="mut small">Saves the flight to the log with planned vs actual numbers and resets for the next flight.</div>
-    <button class="btn primary block" data-act="saveShutdown">Save flight</button>`];
+    <div id="sheetPreview"></div>
+    <button class="btn primary block" data-act="saveShutdown">End &amp; save flight</button>`];
 }
 
 // The moment the sheet's time field refers to. On the start sheet that is the takeoff time.
@@ -1050,6 +1120,13 @@ function renderSheetPreview() {
       box.innerHTML = `<div class="kv"><span class="mut">Plan said</span><span class="v">${esc(p.tank)} at ${fmtTimer(timerAt(f, p.start))} (${hm(p.start)})</span></div>
         <div class="kv"><span class="mut">Difference</span><span class="v" style="color:${Math.abs(diff) >= 2 ? 'var(--amber)' : 'var(--tx)'}">${diff >= 0 ? '+' : ''}${diff} min</span></div>`;
     } else box.innerHTML = p ? `<div class="kv"><span class="mut">Plan said</span><span class="v">${esc(p.tank)} at ${fmtTimer(timerAt(f, p.start))} — this is off plan</span></div>` : '';
+  }
+  if (ui.sheet === 'shutdown') {
+    const est = P.estimate({ ...f, freezeAt: null }, f.cfg, t);
+    const u = num(ui.sd.used);
+    box.innerHTML = `<div class="kv"><span class="mut">Ends with (est.)</span><span class="v">${f.cfg.tanks.map((x) => `${esc(x.id)} ${f1(Math.max(0, est.levels[x.id]))}`).join(' · ')}</span></div>
+      <div class="kv"><span class="mut">Total aboard · used</span><span class="v">${f1(est.total)} · ${f1(est.used)}${isFinite(u) ? ` (GI 275 ${f1(u)})` : ''}</span></div>
+      ${est.empty ? `<div class="issue warn">${ICON.warn}<div>${esc(est.empty.tank)} would have run empty at ${fmtTimer(timerAt(f, est.empty.at))}; record the missed switch in Edit history afterwards.</div></div>` : ''}`;
   }
   if (ui.sheet === 'check') {
     const est = P.estimate(f, f.cfg, t);
@@ -1135,6 +1212,7 @@ function saveSheet(kind) {
     if (ui.sd.divert) { ev.divert = (ui.sd.ident || 'STOP').toUpperCase(); f.divert = { ident: ev.divert, at: t }; ev.altFuel = 0; if (f.alt) f.alt.onBeforeDivert = f.alt.on; if (f.alt) f.alt.on = false; }
     if (!ev.fuelToDest && !ev.gph) ev.gph = P.estimate(f, f.cfg, t).rate;
     f.events.push(ev);
+    f.freezeAt = null; f.snoozeUntil = null;
     later = [Math.max(t, now()), ui.sd.divert ? 'divert' : 'ETE update'];
     msg = ui.sd.divert ? `Diverting to ${ev.divert}` : `ETE ${dur(ete)} saved`;
   }
@@ -1150,7 +1228,7 @@ function saveSheet(kind) {
     msg = `Level at ${fmtTimer(timerAt(f, t))}`;
   }
   if (kind === 'shutdown') {
-    f.shutdown = t; f.finalUsed = num(ui.sd.used) || null; f.status = 'closed';
+    f.shutdown = t; f.finalUsed = num(ui.sd.used) || null; f.status = 'closed'; f.freezeAt = null; f.autoEnded = false;
     f.events.push({ type: 'shutdown', at: t, enteredAt, used: f.finalUsed });
     state.activeFlightId = null; ui.draft = null;
     closeSheet(); persist(); toast('Flight saved'); go('log', f.id); return;
@@ -1206,7 +1284,7 @@ function viewLog() {
 
 function viewFlightDetail(f) {
   const s = flightSummary(f);
-  const evName = (e) => ({ engine: `Taxi on ${e.tank}${e.assumed ? ` (${f.taxiMin} min)` : ''}`, takeoff: 'Takeoff', climb: `Climb @ ${f1(e.gph)}${e.until ? ` for ${dur((e.until - e.at) / MIN)}` : ''}`, level: 'Level off', switch: `Switch → ${e.tank}${e.catchup ? ' (catch-up)' : ''}`, check: `Fuel check · used ${f1(e.used)}`, ete: `ETE ${dur(e.eteMin)}${e.divert ? ' → ' + e.divert : ''}`, shutdown: 'Shutdown' }[e.type] || e.type);
+  const evName = (e) => ({ engine: `Taxi on ${e.tank}${e.assumed ? ` (${f.taxiMin} min)` : ''}`, takeoff: 'Takeoff', climb: `Climb @ ${f1(e.gph)}${e.until ? ` for ${dur((e.until - e.at) / MIN)}` : ''}`, level: 'Level off', switch: `Switch → ${e.tank}${e.catchup ? ' (catch-up)' : ''}`, check: `Fuel check · used ${f1(e.used)}`, ete: `ETE ${dur(e.eteMin)}${e.divert ? ' → ' + e.divert : ''}`, shutdown: `Shutdown${e.assumed ? ' (assumed)' : ''}` }[e.type] || e.type);
   const evs = f.events.map((e, i) => ({ ...e, i })).sort((a, b) => a.at - b.at);
   const editable = !!f.engineStart;
   return `<div class="top"><div><div class="kicker"><a href="#log">Log</a> · ${fmtDate(f.engineStart || f.createdAt)} · ${esc(f.tail)}</div><h1>${flightTitle(f)}</h1></div>${f.autoSaved ? '<span class="badge">auto-saved</span>' : ''}</div>
@@ -1220,8 +1298,9 @@ function viewFlightDetail(f) {
     <div class="legs"><div class="evrow head"><span>Event</span><span>Plan</span><span>Actual</span><span>Entered</span></div><div class="mut small" style="padding:6px 12px">Plan and actual are flight timer; entered is local clock.</div>
       ${evs.length ? evs.map((e) => `<div class="evrow ${editable ? 'tap' : ''}" ${editable ? `role="button" tabindex="0" data-act="editEvent" data-fid="${f.id}" data-i="${e.i}" aria-label="Edit ${esc(evName(e))}"` : ''}><span>${esc(evName(e))}${e.edited || e.added ? ' <span class="badge" style="font-size:10px;padding:1px 5px">edited</span>' : ''}</span><span class="mut">${e.planned ? fmtTimer(timerAt(f, e.planned.at)) : '—'}</span><span style="color:${e.planned && Math.abs(e.at - e.planned.at) >= 2 * MIN ? 'var(--amber)' : ''}">${fmtTimer(timerAt(f, e.at))}</span><span class="mut">${e.enteredAt ? hm(e.enteredAt) : '—'}</span></div>`).join('') : '<div class="empty">No events yet.</div>'}
     </div>
+    ${f.autoEnded || (f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown')) ? `<div class="issue warn">${ICON.warn}<div>${f.autoEnded ? `Ended automatically at the assumed landing time (${f.shutdown ? fmtTimer(timerAt(f, f.shutdown)) : '—'}).` : 'No shutdown was recorded, so fuel kept burning until the flight was auto-saved.'} Tap <b>Shutdown</b> below to set when you actually shut down.</div></div>` : ''}
     ${editable ? `<div class="stack" style="gap:8px"><div class="mut small">Tap an entry to correct it. Add anything you missed:</div>
-      <div class="row wrap">${['switch', 'climb', 'level', 'check'].map((k) => `<button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="${k}">+ ${EV_LABEL[k]}</button>`).join('')}</div></div>` : ''}
+      <div class="row wrap">${['switch', 'climb', 'level', 'check', ...(f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown') ? ['shutdown'] : [])].map((k) => `<button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="${k}">+ ${EV_LABEL[k]}</button>`).join('')}</div></div>` : ''}
     <div class="mut small">${f.planHistory?.length || 0} plan version${f.planHistory?.length === 1 ? '' : 's'} saved. Plan edits never count as actual events.</div>
     <div class="row"><button class="btn grow" data-act="exportCsv" data-id="${f.id}">Export CSV</button>${f.id === state.activeFlightId ? '' : `<button class="btn danger grow" data-act="deleteFlight" data-id="${f.id}">Delete</button>`}</div>
     ${f.status === 'draft' && f.id !== state.activeFlightId ? `<button class="btn outline" data-act="reopen" data-id="${f.id}">Make this the current flight</button>` : ''}
@@ -1269,7 +1348,7 @@ const OVR_FIELDS = [
     ['rules.imbalance.gal', 'Max imbalance gal'], ['rules.imbalance.mode', 'Imbalance rule', ['warn', 'hard', 'off']],
     ['rules.switchMargin', 'Switch margin gal'], ['rules.minLegMin', 'Shortest normal leg min'], ['rules.landBalanced', 'Land balanced', ['true', 'false']]]],
   ['Alerts & app', [
-    ['alerts.preMin', 'Alert minutes before switch'], ['alerts.sound', 'Sound', ['true', 'false']], ['alerts.vibrate', 'Vibrate', ['true', 'false']], ['idleHours', 'Auto-save after idle hours']]]
+    ['alerts.preMin', 'Alert minutes before switch'], ['alerts.sound', 'Sound', ['true', 'false']], ['alerts.vibrate', 'Vibrate', ['true', 'false']], ['landing.graceMin', 'Assume landed after arrival + min'], ['idleHours', 'Auto-save after idle hours']]]
 ];
 const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
 
@@ -1489,6 +1568,23 @@ const actions = {
   liveTime() { ui.viewTime = null; render(); },
   alertSwitch() { const a = ui.alert; ui.alert = null; renderAlert(); go('fly'); openSheet('switch', { tank: a?.tank }); },
   alertDismiss() { ui.alert = null; renderAlert(); },
+  sdAtMs(el) { ui.sd.at = sheetFieldValue(+el.dataset.ms); const i = $('#sd-at'); if (i) i.value = ui.sd.at; renderSheetPreview(); },
+  alertShutdown() { ui.alert = null; renderAlert(); go('fly'); openSheet('shutdown'); },
+  stillFlying() {
+    const f = activeFlight();
+    ui.alert = null; renderAlert();
+    f.freezeAt = null;
+    f.snoozeUntil = now() + 15 * MIN;
+    persist(); go('fly');
+    openSheet('ete');
+    toast('Burn estimate resumed. Update the ETE so the landing check moves too.');
+  },
+  emptySwitch() {
+    const f = activeFlight();
+    const e = P.estimate(f, f.cfg, now()).empty;
+    ui.alert = null; renderAlert(); go('fly');
+    openSheet('switch', { atMs: e ? e.at : now(), tank: null });
+  },
   exportAll() {
     const data = { kind: 'backup', app: APP_NAME, exportedAt: new Date().toISOString(), tails: state.tails, customTypes: state.customTypes, flights: state.flights };
     download(`${APP_NAME.toLowerCase()}-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 1), 'application/json');
@@ -1677,6 +1773,6 @@ setInterval(() => {
 // ---------- boot ----------
 document.title = APP_NAME;
 readHash();
-if (!checkIdle()) render();
+if (!checkIdle()) { checkLanding(); render(); }
 S.requestPersistence();
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
