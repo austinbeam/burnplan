@@ -934,7 +934,7 @@ function sheetEte(f) {
     <button class="btn primary block" data-act="saveEte">Save &amp; rebuild plan</button>`];
 }
 
-const EV_LABEL = { takeoff: 'Takeoff', engine: 'Taxi', switch: 'Switch', climb: 'Climb', level: 'Level off', check: 'Fuel check', ete: 'ETE update', shutdown: 'Shutdown' };
+const EV_LABEL = { takeoff: 'Takeoff', engine: 'Taxi', switch: 'Switch', climb: 'Climb', level: 'Level off', check: 'Fuel check', ete: 'ETE update', shutdown: 'Shutdown', reactivate: 'Reactivation' };
 
 function sheetEdit(f) {
   const k = ui.sd.kind, isNew = ui.sd.i < 0;
@@ -1284,7 +1284,7 @@ function viewLog() {
 
 function viewFlightDetail(f) {
   const s = flightSummary(f);
-  const evName = (e) => ({ engine: `Taxi on ${e.tank}${e.assumed ? ` (${f.taxiMin} min)` : ''}`, takeoff: 'Takeoff', climb: `Climb @ ${f1(e.gph)}${e.until ? ` for ${dur((e.until - e.at) / MIN)}` : ''}`, level: 'Level off', switch: `Switch → ${e.tank}${e.catchup ? ' (catch-up)' : ''}`, check: `Fuel check · used ${f1(e.used)}`, ete: `ETE ${dur(e.eteMin)}${e.divert ? ' → ' + e.divert : ''}`, shutdown: `Shutdown${e.assumed ? ' (assumed)' : ''}` }[e.type] || e.type);
+  const evName = (e) => ({ engine: `Taxi on ${e.tank}${e.assumed ? ` (${f.taxiMin} min)` : ''}`, takeoff: 'Takeoff', climb: `Climb @ ${f1(e.gph)}${e.until ? ` for ${dur((e.until - e.at) / MIN)}` : ''}`, level: 'Level off', switch: `Switch → ${e.tank}${e.catchup ? ' (catch-up)' : ''}`, check: `Fuel check · used ${f1(e.used)}`, ete: `ETE ${dur(e.eteMin)}${e.divert ? ' → ' + e.divert : ''}`, shutdown: `Shutdown${e.assumed ? ' (assumed)' : ''}`, reactivate: 'Reactivated' }[e.type] || e.type);
   const evs = f.events.map((e, i) => ({ ...e, i })).sort((a, b) => a.at - b.at);
   const editable = !!f.engineStart;
   return `<div class="top"><div><div class="kicker"><a href="#log">Log</a> · ${fmtDate(f.engineStart || f.createdAt)} · ${esc(f.tail)}</div><h1>${flightTitle(f)}</h1></div>${f.autoSaved ? '<span class="badge">auto-saved</span>' : ''}</div>
@@ -1303,7 +1303,9 @@ function viewFlightDetail(f) {
       <div class="row wrap">${['switch', 'climb', 'level', 'check', ...(f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown') ? ['shutdown'] : [])].map((k) => `<button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="${k}">+ ${EV_LABEL[k]}</button>`).join('')}</div></div>` : ''}
     <div class="mut small">${f.planHistory?.length || 0} plan version${f.planHistory?.length === 1 ? '' : 's'} saved. Plan edits never count as actual events.</div>
     <div class="row"><button class="btn grow" data-act="exportCsv" data-id="${f.id}">Export CSV</button>${f.id === state.activeFlightId ? '' : `<button class="btn danger grow" data-act="deleteFlight" data-id="${f.id}">Delete</button>`}</div>
-    ${f.status === 'draft' && f.id !== state.activeFlightId ? `<button class="btn outline" data-act="reopen" data-id="${f.id}">Make this the current flight</button>` : ''}
+    ${f.id !== state.activeFlightId && !f.engineStart ? `<button class="btn outline" data-act="reopen" data-id="${f.id}">Make this the current flight</button>` : ''}
+    ${f.id !== state.activeFlightId && f.engineStart && f.status === 'closed' ? `<button class="btn outline" data-act="reactivate" data-id="${f.id}">Reactivate flight</button>
+      <div class="mut small">Reactivating removes the shutdown and resumes the flight as if you never shut down: fuel burns on your recorded tanks right up to now. To only fix a time, tap the entry above instead.</div>` : ''}
   </div>`;
 }
 
@@ -1591,6 +1593,27 @@ const actions = {
   },
   exportCsv(el) { const f = state.flights[el.dataset.id]; download(`${f.from || 'flight'}-${f.to || ''}-${new Date(f.engineStart || f.createdAt).toISOString().slice(0, 10)}.csv`, flightCsv(f), 'text/csv'); },
   deleteFlight(el) { const id = el.dataset.id; ask('Delete this flight from the log?', 'Delete', () => { delete state.flights[id]; persist(); go('log'); }); },
+  reactivate(el) {
+    const cur = activeFlight();
+    if (cur && cur.status === 'active') return toast('Another flight is in progress. End it on the Fly tab first.');
+    const f = state.flights[el.dataset.id];
+    ask(`Reactivate this flight? The shutdown is removed and it resumes as if you never shut down.`, 'Reactivate', () => {
+      if (cur && cur.status === 'draft') cur.status = 'saved';
+      f.events = f.events.filter((e) => e.type !== 'shutdown');
+      f.shutdown = null; f.finalUsed = null; f.freezeAt = null; f.autoEnded = false; f.autoSaved = false;
+      f.snoozeUntil = now() + 30 * MIN;          // don't immediately re-run the landing check
+      f.status = 'active';
+      f.events.push({ type: 'reactivate', at: now(), enteredAt: now() });
+      state.activeFlightId = f.id;
+      state.lastInputAt = now();
+      ui.draft = null; ui.alert = null;
+      rebuildFrom(f, now(), 'reactivated');
+      persist();
+      go('fly');
+      openSheet('ete');
+      toast('Flight reactivated. Enter the current ETE so the plan and landing check are right.');
+    });
+  },
   reopen(el) {
     const cur = activeFlight();
     if (cur && cur.status === 'active') return toast('A flight is in progress');
