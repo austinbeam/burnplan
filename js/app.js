@@ -21,14 +21,62 @@ const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const f1 = (n) => (n == null || !isFinite(n) ? '—' : (Math.round(n * 10) / 10).toFixed(1));
 const pad = (n) => String(n).padStart(2, '0');
-const hm = (ms) => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
-const zt = (ms) => { const d = new Date(ms); return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}Z`; };
+// ---- time zones -----------------------------------------------------------
+// Every moment is stored as an absolute time. Clock times are shown and typed in the flight's own
+// zone (where it departed), so a phone changing zones mid-flight or later changes nothing.
+// "Zulu" clock mode shows and reads clock times in UTC instead; Zulu or local is always shown alongside.
+const phoneTZ = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; } };
+const dtfCache = {};
+function partsIn(ms, zone) {
+  const f = dtfCache[zone] || (dtfCache[zone] = new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+  const o = {};
+  for (const p of f.formatToParts(ms)) if (p.type !== 'literal') o[p.type] = +p.value;
+  if (o.hour === 24) o.hour = 0;
+  return o;
+}
+function offsetMs(zone, ms) {
+  const p = partsIn(ms, zone);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(ms / 1000) * 1000;
+}
+function zoneAbbr(zone, ms = Date.now()) {
+  try { return new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'short' }).formatToParts(ms).find((p) => p.type === 'timeZoneName').value; } catch (e) { return zone; }
+}
+const clockMode = () => state.settings.clockMode || 'local';
+// Zone used for clock times right now: the flight being viewed, else the phone's.
+function viewZone() {
+  let f = null;
+  if (ui.sheet && ui.sd && ui.sd.fid) f = state.flights[ui.sd.fid];
+  else if (ui.route === 'log' && ui.sub && state.flights[ui.sub]) f = state.flights[ui.sub];
+  else f = state.activeFlightId ? state.flights[state.activeFlightId] : null;
+  return (f && f.tz) || phoneTZ();
+}
+const localHM = (ms, zone = viewZone()) => { const p = partsIn(ms, zone); return `${pad(p.hour)}:${pad(p.minute)}`; };
+const utcHM = (ms) => { const d = new Date(ms); return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}Z`; };
+// hm = the primary clock (flight-local or Zulu), zt = the other one, labeled.
+const hm = (ms) => (clockMode() === 'zulu' ? utcHM(ms) : localHM(ms));
+const zt = (ms) => (clockMode() === 'zulu' ? `${localHM(ms)} ${zoneAbbr(viewZone(), ms)}` : utcHM(ms));
 const tz = (ms) => `${hm(ms)} <span class="z">${zt(ms)}</span>`;
+const clockLabel = (ms = Date.now()) => (clockMode() === 'zulu' ? 'Zulu' : zoneAbbr(viewZone(), ms));
+// Read "15:48" in the clock in use, picking the day nearest refMs.
+function parseClockZ(str, refMs) {
+  const m = String(str || '').trim().match(/^(\d{1,2}):?(\d{2})Z?$/i);
+  if (!m) return NaN;
+  const h = +m[1], mi = +m[2];
+  if (h > 23 || mi > 59) return NaN;
+  const zone = clockMode() === 'zulu' ? 'UTC' : viewZone();
+  const p = partsIn(refMs, zone);
+  let t = Date.UTC(p.year, p.month - 1, p.day, h, mi) - offsetMs(zone, refMs);
+  t = Date.UTC(p.year, p.month - 1, p.day, h, mi) - offsetMs(zone, t); // settle DST edges
+  const day = 864e5;
+  while (t - refMs > day / 2) t -= day;
+  while (refMs - t > day / 2) t += day;
+  return t;
+}
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const num = (v) => { const n = parseFloat(v); return isFinite(n) ? n : NaN; };
 const dur = P.fmtDur;
 const now = () => Date.now();
-const fmtDate = (ms) => new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+const fmtDate = (ms, zone) => { try { return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: zone || viewZone() }); } catch (e) { return new Date(ms).toLocaleDateString(); } };
 
 const ICON = {
   warn: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 L22 20 H2 Z"/><path d="M12 10 v4"/><path d="M12 17 v.5"/></svg>',
@@ -470,7 +518,7 @@ function buildPlanFromDraft() {
   let f = activeFlight();
   if (f && f.status === 'active') return;
   const isNew = !f;
-  if (isNew) f = { id: uid(), createdAt: now(), status: 'draft', events: [], planHistory: [] };
+  if (isNew) f = { id: uid(), createdAt: now(), status: 'draft', events: [], planHistory: [], tz: phoneTZ() };
   Object.assign(f, {
     tail: d.tail, typeId: state.tails[d.tail].typeId, cfg: c.cfg,
     from: (d.from || '').toUpperCase(), to: (d.to || '').toUpperCase(),
@@ -648,20 +696,34 @@ function editLeg(i, field, value) {
 // =====================================================================
 // FLY
 // =====================================================================
+// Which zone a flight's clock times use. Shown when it differs from the phone, and in the log.
+const ZONES = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix', 'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu', 'UTC'];
+function zoneControl(f, always) {
+  const fz = f.tz || phoneTZ(), pz = phoneTZ(), t = takeoffOf(f) || now();
+  const differs = offsetMs(fz, now()) !== offsetMs(pz, now());
+  if (!always && !differs) return '';
+  const opts = [...new Set([fz, pz, ...ZONES])];
+  return `<div class="card" style="padding:10px 12px;gap:6px">
+    <div class="row between" style="gap:8px"><span class="small">${differs ? `Clock times use <b>${zoneAbbr(fz, t)}</b>${f.tz ? ' (departure)' : ''}; phone is on <b>${zoneAbbr(pz)}</b>.` : `Clock times use <b>${zoneAbbr(fz, t)}</b>.`}</span>
+      <select aria-label="Time zone for this flight" data-ftz="${f.id}" style="width:auto;height:36px;font-size:13px">${opts.map((z) => `<option value="${z}" ${z === fz ? 'selected' : ''}>${zoneAbbr(z, t)} · ${z.split('/').pop().replace('_', ' ')}</option>`).join('')}</select></div>
+    <div class="mut small">Flight timer and Zulu never change. Pick the zone your clock reads.</div></div>`;
+}
+
 function viewFly() {
   const f = activeFlight();
   if (!f) return `<div class="top"><div><div class="kicker">Fly</div><h1>No flight</h1></div></div><div class="card empty">Set up and plan a flight first.<br><br><a class="btn primary" href="#setup">Flight setup</a></div>`;
   return `<div class="top"><div><div class="kicker">${esc(f.tail)} · ${esc(typeById(f.typeId)?.name || '')}</div><h1>${flightTitle(f)}</h1></div>
-    <div style="text-align:right">${f.engineStart ? `<div class="kicker">Takeoff ${hm(takeoffOf(f))} <span class="z">${zt(takeoffOf(f))}</span></div><div class="mono" style="font-size:20px" id="elapsed"></div>` : '<span class="badge">Planned</span>'}</div></div>
+    <div style="text-align:right">${f.engineStart ? `<div class="kicker">Takeoff ${hm(takeoffOf(f))} ${clockMode() === 'zulu' ? '' : zoneAbbr(viewZone(), takeoffOf(f))} <span class="z">${zt(takeoffOf(f))}</span></div><div class="mono" style="font-size:20px" id="elapsed"></div>` : '<span class="badge">Planned</span>'}</div></div>
   <div class="stack">
     <div class="card" style="padding:10px 12px">
       <div class="timebox">
-        <div class="stack" style="gap:2px;min-width:64px"><label for="flyTime" class="lbl">${ui.viewTime ? 'Showing ' : ''}${flyMode(f) === 'timer' ? 'Flight timer' : 'Clock'}</label><span class="z" id="flyZ"></span></div>
+        <div class="stack" style="gap:2px;min-width:64px"><label for="flyTime" class="lbl">${ui.viewTime ? 'Showing ' : ''}${flyMode(f) === 'timer' ? 'Flight timer' : `${clockLabel()} clock`}</label><span class="z" id="flyZ"></span></div>
         <input id="flyTime" data-fmt="hm" inputmode="numeric" value="${flyTimeValue(f)}" aria-label="${flyMode(f) === 'timer' ? 'Flight timer' : 'Clock time'} to show levels for">
-        ${f.engineStart ? `<button class="btn sm" data-act="toggleFlyMode" style="height:44px">${flyMode(f) === 'timer' ? 'Clock' : 'Timer'}</button>` : ''}
+        ${f.engineStart ? `<button class="btn sm" data-act="toggleFlyMode" style="height:44px">${flyMode(f) === 'timer' ? (clockMode() === 'zulu' ? 'Zulu' : 'Clock') : 'Timer'}</button>` : ''}
         <button class="btn sm ${ui.viewTime ? 'outline' : ''}" data-act="liveTime" style="height:44px">${ui.viewTime ? 'Live' : 'Live'}</button>
       </div>
     </div>
+    ${f.engineStart && clockMode() !== 'zulu' ? zoneControl(f, false) : ''}
     <div id="flyLive"></div>
     ${f.engineStart ? `
       <button class="btn primary block" data-act="openSheet" data-sheet="switch">Record switch</button>
@@ -836,7 +898,7 @@ function timeField(id, label) {
   const f = sheetFlight();
   const canToggle = takeoffField() || !!(f && f.engineStart);
   const tm = ui.sd.tmode;
-  const lbl = typeof label === 'function' ? label(tm) : `${label} · ${tm === 'timer' ? 'flight timer' : 'local clock'}`;
+  const lbl = typeof label === 'function' ? label(tm) : `${label} · ${tm === 'timer' ? 'flight timer' : `${clockLabel()} clock`}`;
   const nowBtns = takeoffField() && tm === 'timer' ? '' : `<button class="btn" style="width:60px;height:52px" data-act="sdMinus">−1m</button><button class="btn" style="width:64px;height:52px" data-act="sdNow">Now</button>`;
   return `<div class="field"><div class="row between"><label for="${id}">${lbl}</label>${canToggle ? `<button class="btn sm" style="height:32px" data-act="sdTmode">${tm === 'timer' ? 'Use clock' : 'Use timer'}</button>` : ''}</div>
   <div class="row"><input id="${id}" class="big key grow" data-fmt="hm" data-sd="at" value="${esc(ui.sd.at)}" inputmode="numeric" placeholder="${tm === 'timer' ? '1:12' : '15:48'}">${nowBtns}</div>
@@ -847,7 +909,7 @@ function sheetStart(f) {
   const tanks = f.cfg.tanks;
   const rows = ui.sd.rows || [];
   const manual = ui.sd.sofar === 'manual';
-  return ['Start flight', `${timeField('sd-at', (tm) => (tm === 'timer' ? 'Flight timer right now' : 'Takeoff time (local clock)'))}
+  return ['Start flight', `${timeField('sd-at', (tm) => (tm === 'timer' ? 'Flight timer right now' : `Takeoff time (${clockLabel()} clock)`))}
     <div class="field"><label>Takeoff tank</label><div class="tankpick">${tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span><span class="s">${f1(f.startLevels[t.id])}</span></button>`).join('')}</div></div>
     <div class="field"><span class="lbl">Since takeoff</span><div class="grid2">
       <button class="btn ${!manual ? 'outline' : ''}" data-act="sdSofar" data-v="plan" aria-pressed="${!manual}">Followed the plan</button>
@@ -944,7 +1006,7 @@ function sheetEdit(f) {
     fields = `<div class="field"><label for="sd-taxi">Taxi minutes before takeoff</label><input id="sd-taxi" class="big key" data-sd="taxi" value="${esc(ui.sd.taxi)}" inputmode="numeric"></div>
       <div class="field"><label>Taxi tank</label><div class="tankpick">${f.cfg.tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span></button>`).join('')}</div></div>`;
   } else {
-    fields = timeField('sd-at', k === 'takeoff' ? (tm) => (tm === 'timer' ? 'Flight timer right now' : 'Takeoff time (local clock)') : k === 'climb' ? 'Climb started' : k === 'switch' ? 'Switched at' : 'At');
+    fields = timeField('sd-at', k === 'takeoff' ? (tm) => (tm === 'timer' ? 'Flight timer right now' : `Takeoff time (${clockLabel()} clock)`) : k === 'climb' ? 'Climb started' : k === 'switch' ? 'Switched at' : 'At');
     if (k === 'takeoff') fields += `<label class="check"><input type="checkbox" data-sd="shift" ${ui.sd.shift ? 'checked' : ''}>Keep my other entries at the same flight timer readings</label>`;
     if (k === 'switch') fields += `<div class="field"><label>Switched to</label><div class="tankpick">${f.cfg.tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span></button>`).join('')}</div></div>`;
     if (k === 'climb') fields += `<div class="grid2"><div class="field"><label for="sd-len">Climb length</label><input id="sd-len" class="big" data-fmt="hm" data-sd="len" value="${esc(ui.sd.len)}" inputmode="numeric" placeholder="still climbing"></div>
@@ -1067,14 +1129,14 @@ function sheetTime() {
       const d = P.parseDur(ui.sd.at);
       return isFinite(d) ? (ui.sd.atStamp || now()) - d * MIN : NaN;
     }
-    const t = P.parseClock(ui.sd.at, now());
+    const t = parseClockZ(ui.sd.at, now());
     return isFinite(t) && t <= now() + MIN ? t : NaN;
   }
   let t;
   if (tm === 'timer' && takeoffOf(f)) {
     const d = P.parseDur(ui.sd.at);
     t = isFinite(d) ? takeoffOf(f) + d * MIN : NaN;
-  } else t = P.parseClock(ui.sd.at, now());
+  } else t = parseClockZ(ui.sd.at, now());
   if (!isFinite(t)) return NaN;
   if (f.engineStart && t < f.engineStart) return NaN;
   if (t > now() + 2 * MIN) return NaN;
@@ -1172,6 +1234,7 @@ function saveSheet(kind) {
     const sw = ui.sd.sofar === 'manual' ? manualSwitches(takeoff, ui.sd.tank) : null;
     if (sw && sw.error) return toast(sw.error);
     f.takeoff = takeoff; f.engineStart = takeoff - f.taxiMin * MIN; f.startTank = ui.sd.tank; f.status = 'active';
+    f.tz = f.tz || phoneTZ();
     if (f.plan.legs[0] && f.plan.legs[0].tank !== f.startTank) { f.plan.legs[0].tank = f.startTank; f.plan.source = 'edited'; }
     f.events.push({ type: 'engine', at: f.engineStart, enteredAt, tank: f.startTank, assumed: true });
     f.events.push({ type: 'takeoff', at: takeoff, enteredAt, by: ui.sd.tmode });
@@ -1275,7 +1338,7 @@ function viewLog() {
       <div class="kv"><span class="mut">Avg flight time vs ETE</span><span class="v">${tErr == null ? '—' : (tErr >= 0 ? '+' : '') + Math.round(tErr) + ' min'}</span></div>
       <div class="kv"><span class="mut">Avg fuel error (GI 275)</span><span class="v">${fErr == null ? '—' : `${fErr >= 0 ? '+' : ''}${f1(fErr)} gal (${fPct >= 0 ? '+' : ''}${f1(fPct)}%)`}</span></div>
       <div class="mut small">Positive = took longer / burned more than ForeFlight planned. Enter GI 275 fuel used at shutdown to fill in fuel.</div></div>` : ''}
-    <div class="list">${flights.length ? flights.map((f) => `<a class="item" href="#log/${f.id}"><div><div class="t">${flightTitle(f)}</div><div class="s">${fmtDate(f.engineStart || f.createdAt)} · ${esc(f.tail)} · ${f.status === 'active' ? 'in progress' : f.status === 'draft' ? 'planned' : f.autoSaved ? 'auto-saved' : 'closed'}</div></div>
+    <div class="list">${flights.length ? flights.map((f) => `<a class="item" href="#log/${f.id}"><div><div class="t">${flightTitle(f)}</div><div class="s">${fmtDate(f.engineStart || f.createdAt, f.tz || phoneTZ())} · ${esc(f.tail)} · ${f.status === 'active' ? 'in progress' : f.status === 'draft' ? 'planned' : f.autoSaved ? 'auto-saved' : 'closed'}</div></div>
       <span class="mono ${f.id === state.activeFlightId ? '' : 'mut'}" style="color:${f.id === state.activeFlightId ? 'var(--amber)' : ''}">${f.id === state.activeFlightId ? 'active' : f1(f.finalUsed ?? f.plannedFuel) + ' gal'}</span></a>`).join('') : '<div class="card empty">No flights yet.</div>'}</div>
     <div class="card"><h2>Backup</h2><div class="mut small">Everything is stored only on this phone. Export a backup to keep a copy or move to a new phone.</div>
       <div class="row"><button class="btn grow" data-act="exportAll">Export backup</button><label class="btn grow" for="importFile">Import</label><input type="file" id="importFile" accept="application/json,.json" class="hidden"></div></div>
@@ -1287,7 +1350,7 @@ function viewFlightDetail(f) {
   const evName = (e) => ({ engine: `Taxi on ${e.tank}${e.assumed ? ` (${f.taxiMin} min)` : ''}`, takeoff: 'Takeoff', climb: `Climb @ ${f1(e.gph)}${e.until ? ` for ${dur((e.until - e.at) / MIN)}` : ''}`, level: 'Level off', switch: `Switch → ${e.tank}${e.catchup ? ' (catch-up)' : ''}`, check: `Fuel check · used ${f1(e.used)}`, ete: `ETE ${dur(e.eteMin)}${e.divert ? ' → ' + e.divert : ''}`, shutdown: `Shutdown${e.assumed ? ' (assumed)' : ''}`, reactivate: 'Reactivated' }[e.type] || e.type);
   const evs = f.events.map((e, i) => ({ ...e, i })).sort((a, b) => a.at - b.at);
   const editable = !!f.engineStart;
-  return `<div class="top"><div><div class="kicker"><a href="#log">Log</a> · ${fmtDate(f.engineStart || f.createdAt)} · ${esc(f.tail)}</div><h1>${flightTitle(f)}</h1></div>${f.autoSaved ? '<span class="badge">auto-saved</span>' : ''}</div>
+  return `<div class="top"><div><div class="kicker"><a href="#log">Log</a> · ${fmtDate(f.engineStart || f.createdAt, f.tz || phoneTZ())} · ${esc(f.tail)}</div><h1>${flightTitle(f)}</h1></div>${f.autoSaved ? '<span class="badge">auto-saved</span>' : ''}</div>
   <div class="stack">
     <div class="card"><div class="evrow head" style="padding:0;grid-template-columns:1.4fr 1fr 1fr"><span>ForeFlight vs actual</span><span>Plan</span><span>Actual</span></div>
       <div class="evrow" style="padding:0;grid-template-columns:1.4fr 1fr 1fr;border:none"><span>Flight time</span><span>${dur(s.plannedFlight)}</span><span>${s.actualFlight ? dur(s.actualFlight) : '—'}</span></div>
@@ -1295,7 +1358,7 @@ function viewFlightDetail(f) {
       <div class="evrow" style="padding:0;grid-template-columns:1.4fr 1fr 1fr;border:none"><span>Cruise gph</span><span>${f1(s.plannedGph)}</span><span>${f1(s.actualGph)}</span></div>
       ${f.divert ? `<div class="mut small">Planned ${esc(f.to)}; diverted to ${esc(f.divert.ident)} at ${hm(f.divert.at)}.</div>` : ''}
     </div>
-    <div class="legs"><div class="evrow head"><span>Event</span><span>Plan</span><span>Actual</span><span>Entered</span></div><div class="mut small" style="padding:6px 12px">Plan and actual are flight timer; entered is local clock.</div>
+    <div class="legs"><div class="evrow head"><span>Event</span><span>Plan</span><span>Actual</span><span>Entered</span></div>${f.engineStart ? `<div style="padding:8px 12px 0">${zoneControl(f, true)}</div>` : ''}<div class="mut small" style="padding:6px 12px">Plan and actual are flight timer; entered is ${clockLabel()} clock.</div>
       ${evs.length ? evs.map((e) => `<div class="evrow ${editable ? 'tap' : ''}" ${editable ? `role="button" tabindex="0" data-act="editEvent" data-fid="${f.id}" data-i="${e.i}" aria-label="Edit ${esc(evName(e))}"` : ''}><span>${esc(evName(e))}${e.edited || e.added ? ' <span class="badge" style="font-size:10px;padding:1px 5px">edited</span>' : ''}</span><span class="mut">${e.planned ? fmtTimer(timerAt(f, e.planned.at)) : '—'}</span><span style="color:${e.planned && Math.abs(e.at - e.planned.at) >= 2 * MIN ? 'var(--amber)' : ''}">${fmtTimer(timerAt(f, e.at))}</span><span class="mut">${e.enteredAt ? hm(e.enteredAt) : '—'}</span></div>`).join('') : '<div class="empty">No events yet.</div>'}
     </div>
     ${f.autoEnded || (f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown')) ? `<div class="issue warn">${ICON.warn}<div>${f.autoEnded ? `Ended automatically at the assumed landing time (${f.shutdown ? fmtTimer(timerAt(f, f.shutdown)) : '—'}).` : 'No shutdown was recorded, so fuel kept burning until the flight was auto-saved.'} Tap <b>Shutdown</b> below to set when you actually shut down.</div></div>` : ''}
@@ -1326,6 +1389,7 @@ function flightCsv(f) {
   let t = f.plan.startMin;
   for (const l of f.plan.legs) { rows.push(['plan', 'leg', l.tank, fmtTimer(t - f.taxiMin), '', '', '', Math.round(l.min)]); t += l.min; }
   const s = flightSummary(f);
+  rows.push(['summary', 'time_zone', '', '', '', '', '', f.tz || phoneTZ()]);
   rows.push(['summary', 'planned_flight_min', '', '', '', '', '', s.plannedFlight]);
   rows.push(['summary', 'actual_flight_min', '', '', '', '', '', s.actualFlight ? Math.round(s.actualFlight) : '']);
   rows.push(['summary', 'planned_block_min', '', '', '', '', '', s.plannedBlock]);
@@ -1366,6 +1430,11 @@ function viewAircraft() {
       <div class="mut small">Built-in types ship with the app. Copy one to make your own (e.g. a different tank layout).</div>
       <div class="list">${allTypes().map((t) => `<a class="item" href="#aircraft/type-${esc(t.id)}"><div><div class="t">${esc(t.name)}</div><div class="s">${t.builtin ? 'Built-in' : 'Custom (this phone)'} · ${t.tanks.length} tanks · ${t.tanks.reduce((a, x) => a + x.capacity, 0)} gal</div></div><span class="mut">›</span></a>`).join('')}</div>
       <label class="btn" for="importFile2">Import tail or type file</label><input type="file" id="importFile2" accept="application/json,.json" class="hidden">
+    </div>
+    <div class="card"><h2>App settings</h2>
+      <div class="field"><span class="lbl">Clock times</span>
+        <div class="seg" role="group" aria-label="Clock times"><button class="${clockMode() === 'local' ? 'on' : ''}" aria-pressed="${clockMode() === 'local'}" data-act="clockMode" data-v="local">Local (flight's zone)</button><button class="${clockMode() === 'zulu' ? 'on' : ''}" aria-pressed="${clockMode() === 'zulu'}" data-act="clockMode" data-v="zulu">Zulu</button></div></div>
+      <div class="mut small">Local shows each flight in the zone it departed from, with Zulu alongside. Zulu shows and reads all clock times in UTC.</div>
     </div>
   </div>`;
 }
@@ -1570,6 +1639,7 @@ const actions = {
   liveTime() { ui.viewTime = null; render(); },
   alertSwitch() { const a = ui.alert; ui.alert = null; renderAlert(); go('fly'); openSheet('switch', { tank: a?.tank }); },
   alertDismiss() { ui.alert = null; renderAlert(); },
+  clockMode(el) { state.settings.clockMode = el.dataset.v; persist(); render(); toast(el.dataset.v === 'zulu' ? 'Clock times now in Zulu' : 'Clock times now in each flight\'s local zone'); },
   sdAtMs(el) { ui.sd.at = sheetFieldValue(+el.dataset.ms); const i = $('#sd-at'); if (i) i.value = ui.sd.at; renderSheetPreview(); },
   alertShutdown() { ui.alert = null; renderAlert(); go('fly'); openSheet('shutdown'); },
   stillFlying() {
@@ -1707,13 +1777,14 @@ function onField(ev, committed) {
     return;
   }
   if (!committed) return;
+  if (el.dataset.ftz) { const fl = state.flights[el.dataset.ftz]; fl.tz = el.value; persist(); render(); toast(`Clock times for this flight now in ${zoneAbbr(el.value, takeoffOf(fl) || now())}`); return; }
   if (el.dataset.legTank !== undefined) return editLeg(+el.dataset.legTank, 'tank', el.value);
   if (el.dataset.legMin !== undefined) return editLeg(+el.dataset.legMin, 'min', el.value);
   if (el.id === 'flyTime') {
     const f = activeFlight();
     let t;
     if (flyMode(f) === 'timer') { const d = P.parseDur(el.value); t = isFinite(d) ? takeoffOf(f) + d * MIN : NaN; }
-    else t = P.parseClock(el.value, now());
+    else t = parseClockZ(el.value, now());
     if (!isFinite(t)) { toast(flyMode(f) === 'timer' ? 'Enter the flight timer as h:mm' : 'Enter the time as HH:MM'); return; }
     ui.viewTime = Math.abs(t - now()) < MIN ? null : t;
     render();
