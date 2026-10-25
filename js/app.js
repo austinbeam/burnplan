@@ -603,7 +603,15 @@ function viewPlan() {
     ${['error', 'warn', 'info'].map((sv) => (groupIssues[sv] || []).map((i) => `<div class="issue ${sv}">${sv === 'info' ? ICON.info : ICON.warn}<div>${i.legIndex != null && i.legIndex >= 0 ? `<b>Leg ${i.legIndex + 1}:</b> ` : ''}${esc(i.msg)}</div></div>`).join('')).join('')}
     <div class="stack" style="gap:6px">
       ${active ? `<div class="seg" role="group" aria-label="Plan view"><button class="${whole ? 'on' : ''}" aria-pressed="${whole}" data-act="planView" data-v="whole">Whole flight</button><button class="${whole ? '' : 'on'}" aria-pressed="${!whole}" data-act="planView" data-v="remaining">Remaining</button></div>` : ''}
-      <div class="row between small mut"><span>Tank use over time</span><span>max Δ ${f1(chk.maxImb)} · limit ${cfg.rules.imbalance.gal}</span></div>
+      <div class="row between small mut"><span>Tank use over time</span><span>${(() => {
+        const sideNow = (sd) => cfg.tanks.filter((x) => x.side === sd).reduce((acc, x) => acc + estNow.levels[x.id], 0);
+        const nowImb = active ? Math.abs(sideNow('L') - sideNow('R')) : null;
+        const ahead = active ? chk.rows.filter((r) => r.startMin + r.min > curMin + 0.01).map((r) => Math.abs(r.imb)) : chk.rows.map((r) => Math.abs(r.imb)).concat([Math.abs(chk.startImb)]);
+        const maxShown = Math.max(nowImb ?? 0, ...ahead, ...pastRows.map((r) => Math.abs(r.imb)));
+        const lim = cfg.rules.imbalance.gal;
+        const col = (v) => (v > lim + P.TOL ? 'var(--warn)' : v >= lim - 2 ? 'var(--amber)' : 'inherit');
+        return `${nowImb != null ? `<span style="color:${col(nowImb)}">now Δ ${f1(nowImb)}</span> · ` : ''}<span style="color:${col(maxShown)}">max ${f1(maxShown)}</span> · limit ${lim}`;
+      })()}</span></div>
       ${(() => {
         // Whole flight = what was actually flown (from recorded switches/climbs) up to the current time,
         // then the plan from now on. Remaining = the plan from now on only.
@@ -631,7 +639,7 @@ function viewPlan() {
     </div>
     <div class="legs">
       <div class="legrow head"><span>#</span><span>Tank</span><span>Start</span><span>Min</span><span>Gal</span><span>After</span><span class="right">L/R Δ</span><span></span></div>
-      ${pastRows.map((r, idx) => `<div class="legrow past"><span>✓</span><span style="color:${colorOf(r.tank)};font-weight:600;font-family:var(--sans)">${esc(r.tank)}</span><span>${fmtTimer(timerAt(f, r.start))}</span><span>${Math.round((r.end - r.start) / MIN)}</span><span>${f1(r.fuel)}</span><span>${f1(r.after)}</span><span class="right ${idx === pastRows.length - 1 ? 'onnow' : ''}">${idx === pastRows.length - 1 ? 'on now' : 'actual'}</span><span></span>${phaseLines(P.actualPhases(f, r.start, r.end), idx === pastRows.length - 1 ? 'now ' + fmtTimer(timerAt(f, r.end)) : fmtTimer(timerAt(f, r.end)))}</div>`).join('')}
+      ${pastRows.map((r, idx) => `<div class="legrow past"><span class="${idx === pastRows.length - 1 ? 'onnow' : ''}">${idx === pastRows.length - 1 ? '●' : '✓'}</span><span style="color:${colorOf(r.tank)};font-weight:600;font-family:var(--sans)">${esc(r.tank)}</span><span>${fmtTimer(timerAt(f, r.start))}</span><span>${Math.round((r.end - r.start) / MIN)}</span><span>${f1(r.fuel)}</span><span>${f1(r.after)}</span><span class="right ${Math.abs(r.imb) > cfg.rules.imbalance.gal + P.TOL ? 'flag' : Math.abs(r.imb) >= cfg.rules.imbalance.gal - 2 ? 'flag w' : 'mut'}">${f1(Math.abs(r.imb))}</span><span></span>${phaseLines(P.actualPhases(f, r.start, r.end), idx === pastRows.length - 1 ? 'now ' + fmtTimer(timerAt(f, r.end)) + ' · on now' : fmtTimer(timerAt(f, r.end)))}</div>`).join('')}
       ${offPlan ? `<div class="issue warn" style="margin:8px">${ICON.warn}<div>You're on <b>${esc(estNow.active)}</b>; the plan has <b>${esc(planAtNow.tank)}</b> right now. <button class="btn sm outline" data-act="regen" style="margin-top:6px">Rebuild from now</button></div></div>` : ''}
       ${chk.rows.map((r, i) => {
         if (active && r.startMin + r.min <= curMin + 0.01) return '';
@@ -681,7 +689,8 @@ function actualLegs(f, until = now(), cutAtPlan = true) {
   out.push({ tank, start, end: Math.min(until, cut) });
   return out.filter((l) => l.start < cut && l.end - l.start >= 0.5 * MIN).map((l) => {
     const e1 = P.estimate(f, f.cfg, l.start), e2 = P.estimate(f, f.cfg, l.end);
-    return { ...l, end: Math.min(l.end, cut), fuel: e1.levels[l.tank] - e2.levels[l.tank], after: e2.levels[l.tank] };
+    const side = (s) => f.cfg.tanks.filter((x) => x.side === s).reduce((a, x) => a + e2.levels[x.id], 0);
+    return { ...l, end: Math.min(l.end, cut), fuel: e1.levels[l.tank] - e2.levels[l.tank], after: e2.levels[l.tank], imb: side('L') - side('R') };
   });
 }
 

@@ -248,7 +248,9 @@ export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requi
   const groupOf = (id) => cfg.groups.findIndex((g) => g.left === id || g.right === id);
 
   let t = startMin;
-  let maxImb = 0;
+  const startImb = sideTot('L') - sideTot('R');
+  let maxImb = Math.abs(startImb);
+  if (legs.length && Math.abs(startImb) > r.imbalance.gal + TOL) add('imbalance', sev(r.imbalance.mode), 0, `Imbalance is ${Math.abs(startImb).toFixed(1)} gal now (limit ${r.imbalance.gal})`);
   let lastGroup = -1;
   legs.forEach((leg, i) => {
     const start = t;
@@ -288,7 +290,7 @@ export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requi
   if (requiredLanding > 0 && landing < requiredLanding - TOL) add('reserve', sev(r.reserve.mode), legs.length - 1, `Lands with ${landing.toFixed(1)}; reserve needs ${requiredLanding.toFixed(1)}`);
   const landImb = ids.filter((i) => tm[i].side === 'L').reduce((a, i) => a + landLv[i], 0) - ids.filter((i) => tm[i].side === 'R').reduce((a, i) => a + landLv[i], 0);
   if (r.landBalanced && t >= endMin - 0.5 && Math.abs(landImb) > 3) add('landbalance', 'info', legs.length - 1, `Lands ${Math.abs(landImb).toFixed(1)} gal ${landImb > 0 ? 'left' : 'right'} heavy`);
-  return { rows, issues, landing, landLevels: landLv, landImb, maxImb, planEnd: t };
+  return { rows, issues, landing, landLevels: landLv, landImb, maxImb, startImb, planEnd: t };
 }
 
 // ---- in-flight estimation ------------------------------------------------
