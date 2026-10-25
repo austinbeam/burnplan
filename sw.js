@@ -1,6 +1,6 @@
 // Offline-first service worker: the whole app is cached on first load.
 // Bump VERSION whenever app files change so phones pick up the update.
-const VERSION = 'burnplan-v24';
+const VERSION = 'burnplan-v25';
 const FILES = [
   './',
   'index.html',
@@ -16,7 +16,8 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's HTTP cache so a new version never caches old files.
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -32,7 +33,7 @@ self.addEventListener('fetch', (e) => {
   if (url.origin !== location.origin) return;
   e.respondWith(
     caches.match(e.request, { ignoreSearch: true }).then((hit) => {
-      const net = fetch(e.request).then((res) => {
+      const net = fetch(e.request, { cache: 'no-cache' }).then((res) => {
         if (res && res.ok) caches.open(VERSION).then((c) => c.put(e.request, res.clone()));
         return res;
       }).catch(() => hit || caches.match('index.html'));

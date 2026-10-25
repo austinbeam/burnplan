@@ -3,6 +3,7 @@ import * as P from './planner.js';
 import * as S from './store.js';
 
 export const APP_NAME = 'Burnplan';
+export const APP_VERSION = 'v25'; // keep in step with VERSION in sw.js
 const MIN = 60000;
 const HOUR = 3600000;
 
@@ -937,7 +938,7 @@ function openSheet(name, data = {}) {
   ui.sheet = name; ui.sd = sd;
   renderSheet();
 }
-function closeSheet() { ui.sheet = null; ui.sd = {}; renderSheet(); }
+function closeSheet() { ui.sheet = null; ui.sd = {}; renderSheet(); if (ui.reloadPending) setTimeout(ui.reloadPending, 300); }
 function ask(msg, yesLabel, fn) { ui.sheet = 'confirm'; ui.sd = { msg, yesLabel, fn }; renderSheet(); }
 
 function renderSheet() {
@@ -1747,6 +1748,7 @@ function viewAircraft() {
       <div class="field"><span class="lbl">Clock times</span>
         <div class="seg" role="group" aria-label="Clock times"><button class="${clockMode() === 'local' ? 'on' : ''}" aria-pressed="${clockMode() === 'local'}" data-act="clockMode" data-v="local">Local (flight's zone)</button><button class="${clockMode() === 'zulu' ? 'on' : ''}" aria-pressed="${clockMode() === 'zulu'}" data-act="clockMode" data-v="zulu">Zulu</button></div></div>
       <div class="mut small">Local shows each flight in the zone it departed from, with Zulu alongside. Zulu shows and reads all clock times in UTC.</div>
+      <div class="kv"><span class="mut">App version</span><span class="v">${APP_VERSION}</span></div>
     </div>
   </div>`;
 }
@@ -2260,4 +2262,18 @@ document.title = APP_NAME;
 readHash();
 if (!checkIdle()) { checkLanding(); render(); }
 S.requestPersistence();
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+// Updates: check whenever the app comes to the front; when a new version takes over, reload into it
+// (unless a panel is open, in which case say so and reload when it closes).
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    setInterval(() => reg.update().catch(() => {}), 30 * MIN);
+  }).catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) return; // first install, nothing to swap
+    const go = () => { persist(); location.reload(); };
+    if (!ui.sheet) go();
+    else { toast('Update downloaded. It will load when you close this panel.', 6000); ui.reloadPending = go; }
+  });
+}
