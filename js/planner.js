@@ -48,29 +48,38 @@ export function reserveGph(cfg) {
 // Segments are in minutes from engine start. ForeFlight total fuel includes taxi.
 // climbMin / climbGph / cruiseGph override the aircraft profile for this flight.
 // With no cruise override, cruise is derived so the total matches ForeFlight.
-export function buildTimeline(cfg, { taxiMin = 0, eteMin = 0, totalFuel = 0, climbMin: cm, climbGph: cg, cruiseGph: cr }) {
+const given = (v) => v !== null && v !== undefined && v !== '' && isFinite(v) && +v >= 0;
+export function buildTimeline(cfg, { taxiMin = 0, eteMin = 0, totalFuel = 0, climbMin: cm, climbGph: cg, cruiseGph: cr, descentMin: dm, descentGph: dg, taxiInMin: tim }) {
   const b = cfg.burn;
   const climbGph = cg > 0 ? cg : b.climbGph;
   const taxiFuel = (taxiMin / 60) * b.ground;
-  const climbMin = Math.min(cm >= 0 && cm !== null && cm !== undefined && cm !== '' ? +cm : b.climbMin || 0, eteMin);
+  const climbMin = Math.min(given(cm) ? +cm : b.climbMin || 0, eteMin);
   const climbFuel = (climbMin / 60) * climbGph;
-  const cruiseMin = Math.max(0, eteMin - climbMin);
+  // Descent ends at landing (inside the ETE); taxi-in comes after landing, at the ground rate.
+  const descentMin = Math.min(given(dm) ? +dm : b.descentMin || 0, Math.max(0, eteMin - climbMin));
+  const descentGph = dg > 0 ? +dg : b.descentGph || b.cruise;
+  const descentFuel = (descentMin / 60) * descentGph;
+  const taxiInMin = given(tim) ? +tim : b.taxiInMin || 0;
+  const taxiInFuel = (taxiInMin / 60) * b.ground;
+  const cruiseMin = Math.max(0, eteMin - climbMin - descentMin);
   let cruiseGph = b.cruise;
   let derived = false;
   let issue = null;
   if (cr > 0) cruiseGph = +cr;
   else if (totalFuel > 0 && cruiseMin > 0) {
-    const f = totalFuel - taxiFuel - climbFuel;
+    const f = totalFuel - taxiFuel - climbFuel - descentFuel;
     if (f > 0) { cruiseGph = f / (cruiseMin / 60); derived = true; }
-    else issue = 'ForeFlight fuel is less than taxi + climb; using the aircraft cruise burn.';
+    else issue = 'ForeFlight fuel is less than taxi + climb + descent; using the aircraft cruise burn.';
   }
   const segments = [
     { phase: 'taxi', start: 0, min: taxiMin, gph: b.ground },
     { phase: 'climb', start: taxiMin, min: climbMin, gph: climbGph },
-    { phase: 'cruise', start: taxiMin + climbMin, min: cruiseMin, gph: cruiseGph }
+    { phase: 'cruise', start: taxiMin + climbMin, min: cruiseMin, gph: cruiseGph },
+    { phase: 'descent', start: taxiMin + climbMin + cruiseMin, min: descentMin, gph: descentGph },
+    { phase: 'taxi', start: taxiMin + eteMin, min: taxiInMin, gph: b.ground, taxiIn: true }
   ].filter((s) => s.min > 0);
   const total = segments.reduce((a, s) => a + (s.min / 60) * s.gph, 0);
-  return { segments, taxiFuel, climbMin, climbGph, climbFuel, cruiseMin, cruiseGph, derived, issue, blockMin: taxiMin + eteMin, totalFuel: total, ffTotal: totalFuel };
+  return { segments, taxiFuel, climbMin, climbGph, climbFuel, cruiseMin, cruiseGph, descentMin, descentGph, descentFuel, taxiInMin, taxiInFuel, derived, issue, blockMin: taxiMin + eteMin + taxiInMin, landMin: taxiMin + eteMin, totalFuel: total, ffTotal: totalFuel };
 }
 
 export function rateAt(segs, t) {
@@ -322,14 +331,35 @@ export function climbLenMin(flight, ev) {
   return flight.cfg?.burn?.stepClimbMin ?? 5;
 }
 
+// Climb, descent, level off and landing entries: the latest one at ms says what the airplane is doing.
+const VERT = ['climb', 'descent', 'level', 'landing'];
+function lastVertical(flight, ms) {
+  const evs = (flight.events || []).filter((e) => e.at <= ms && VERT.includes(e.type)).sort((a, b) => a.at - b.at);
+  return evs[evs.length - 1] || null;
+}
 // The climb in progress at ms, if any.
 export function activeClimb(flight, ms) {
-  const evs = (flight.events || []).filter((e) => e.at <= ms && (e.type === 'climb' || e.type === 'level')).sort((a, b) => a.at - b.at);
-  const last = evs[evs.length - 1];
+  const last = lastVertical(flight, ms);
   if (!last || last.type !== 'climb') return null;
   if (last.until && ms >= last.until) return null;
   return last;
 }
+// The descent (or descent step) in progress at ms, if any. It lasts until level off, a climb or landing.
+export function activeDescent(flight, ms) {
+  const last = lastVertical(flight, ms);
+  if (!last || last.type !== 'descent') return null;
+  if (last.until && ms >= last.until) return null;
+  return last;
+}
+// The recorded landing at or before ms, if any.
+export function landingAt(flight, ms = Infinity) {
+  const evs = (flight.events || []).filter((e) => e.type === 'landing' && e.at <= ms).sort((a, b) => a.at - b.at);
+  return evs[evs.length - 1] || null;
+}
+export const groundGph = (flight) => flight.cfg?.burn?.ground ?? (flight.segs || []).find((s) => s.phase === 'taxi')?.gph ?? 0;
+export const taxiInMinOf = (flight) => flight.taxiInMin ?? (flight.segs || []).filter((s) => s.taxiIn).reduce((a, s) => a + s.min, 0);
+export const descentMinOf = (flight) => flight.descentMin ?? 0;
+export const descentGphOf = (flight) => flight.descentGph || flight.cfg?.burn?.descentGph || cruiseRateAt(flight, Infinity);
 
 // Latest cruise burn the pilot gave us: a "set cruise burn" entry, a check with a flow, or a gph typed into an ETE update.
 // A burn entry with scope 'all' applies to the whole cruise, before and after it was entered; any later
@@ -356,9 +386,13 @@ export function cruiseRateAt(flight, ms) {
 export function phaseAt(flight, ms) {
   const to = takeoffMs(flight);
   if (ms < to) return { phase: 'taxi', gph: rateAt(flight.segs, (ms - flight.engineStart) / MS_MIN) };
+  const land = landingAt(flight, ms);
+  if (land) return { phase: 'taxi', gph: groundGph(flight), since: land.at, taxiIn: true };
   const c = activeClimb(flight, ms);
   if (c) return { phase: 'climb', gph: c.gph, since: c.at, until: c.until || null };
-  const hasClimbEvents = (flight.events || []).some((e) => e.type === 'climb' && e.at <= ms);
+  const d = activeDescent(flight, ms);
+  if (d) return { phase: 'descent', gph: d.gph, since: d.at, until: d.until || null };
+  const hasClimbEvents = (flight.events || []).some((e) => VERT.includes(e.type) && e.at <= ms);
   const e = lastEteRate(flight, ms);
   if (hasClimbEvents) return { phase: 'cruise', gph: cruiseRateAt(flight, ms) };
   const t = (ms - flight.engineStart) / MS_MIN;
@@ -454,32 +488,54 @@ export function actualPhases(flight, a, b) {
 export function arrivalOf(flight) {
   const etes = (flight.events || []).filter((e) => e.type === 'ete').sort((a, b) => a.at - b.at);
   const last = etes[etes.length - 1];
+  const land = landingAt(flight);
+  if (land) return land.at;
   if (last) return last.at + last.eteMin * MS_MIN;
-  const end = flight.segs.reduce((a, s) => Math.max(a, s.start + s.min), 0);
+  const end = flight.segs.reduce((a, s) => Math.max(a, s.start + s.min), 0) - taxiInMinOf(flight);
   return flight.engineStart + end * MS_MIN;
 }
 
-// Remaining-flight timeline from a point in time, honoring an ETE update and any climb in progress.
+// Remaining-flight timeline from a point in time, honoring an ETE update, a climb or descent in
+// progress, a recorded landing (taxi-in), and the planned descent and taxi-in at the end.
+// landMin is when the airplane lands (minutes from engine start); endMin adds taxi-in.
 export function remainingSegs(flight, fromMs) {
+  const es = flight.engineStart;
   const etes = (flight.events || []).filter((e) => e.type === 'ete' && e.at <= fromMs).sort((a, b) => a.at - b.at);
   const last = etes[etes.length - 1];
-  const nowMin = (fromMs - flight.engineStart) / MS_MIN;
+  const nowMin = (fromMs - es) / MS_MIN;
+  const taxiIn = taxiInMinOf(flight);
   const planEnd = flight.segs.reduce((a, s) => Math.max(a, s.start + s.min), 0);
-  const endMin = Math.max(nowMin, last ? (last.at - flight.engineStart) / MS_MIN + last.eteMin : planEnd);
+  const land = landingAt(flight, fromMs);
+  if (land) {
+    const landMin = (land.at - es) / MS_MIN;
+    const endMin = Math.max(nowMin, landMin + taxiIn);
+    return { segs: [{ phase: 'taxi', start: nowMin, min: endMin - nowMin, gph: groundGph(flight), taxiIn: true }], startMin: nowMin, endMin, landMin };
+  }
+  const planLand = last ? (last.at - es) / MS_MIN + last.eteMin : planEnd - taxiIn;
+  const landMin = Math.max(nowMin, planLand);
+  const endMin = landMin + taxiIn;
   const climbing = activeClimb(flight, fromMs);
-  const hasClimbEvents = (flight.events || []).some((e) => e.type === 'climb' && e.at <= fromMs);
+  const descending = activeDescent(flight, fromMs);
+  const hasVert = (flight.events || []).some((e) => VERT.includes(e.type) && e.at <= fromMs);
   const hasBurn = (flight.events || []).some((e) => e.type === 'burn' && (e.at <= fromMs || e.scope === 'all'));
-  if (!last && !climbing && !hasClimbEvents && !hasBurn) return { segs: flight.segs, startMin: nowMin, endMin };
+  if (!last && !hasVert && !hasBurn) return { segs: flight.segs, startMin: nowMin, endMin: Math.max(nowMin, planEnd), landMin };
   const cruise = cruiseRateAt(flight, fromMs);
   const segs = [];
   let t = nowMin;
-  if (climbing) {
-    const climbEnd = climbing.until || climbing.at + climbLenMin(flight, climbing) * MS_MIN;
-    const cEnd = Math.min(endMin, Math.max(nowMin, (climbEnd - flight.engineStart) / MS_MIN));
-    if (cEnd > t) { segs.push({ phase: 'climb', start: t, min: cEnd - t, gph: climbing.gph }); t = cEnd; }
+  const push = (phase, to, gph, extra = {}) => { if (to - t > EPS) { segs.push({ phase, start: t, min: to - t, gph, ...extra }); t = to; } };
+  if (descending) push('descent', landMin, descending.gph);
+  else {
+    if (climbing) {
+      const climbEnd = climbing.until || climbing.at + climbLenMin(flight, climbing) * MS_MIN;
+      push('climb', Math.min(landMin, Math.max(nowMin, (climbEnd - es) / MS_MIN)), climbing.gph);
+    }
+    const tod = Math.max(t, landMin - descentMinOf(flight));
+    push('cruise', tod, cruise);
+    push('descent', landMin, descentGphOf(flight));
   }
-  segs.push({ phase: 'cruise', start: t, min: Math.max(0, endMin - t), gph: cruise });
-  return { segs, startMin: nowMin, endMin };
+  push('taxi', endMin, groundGph(flight), { taxiIn: true });
+  if (!segs.length) segs.push({ phase: 'cruise', start: nowMin, min: 0, gph: cruise });
+  return { segs, startMin: nowMin, endMin, landMin };
 }
 
 // ---- time helpers --------------------------------------------------------

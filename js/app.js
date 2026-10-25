@@ -3,7 +3,7 @@ import * as P from './planner.js';
 import * as S from './store.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v30'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v31'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -214,6 +214,13 @@ function checkLanding() {
   const f = activeFlight();
   if (!f || f.status !== 'active' || !f.engineStart || f.shutdown) return;
   const t = now();
+  const land = P.landingAt(f);
+  if (land) {
+    // Landing recorded: no landing alert; if nothing else is entered, assume shutdown after taxi-in.
+    const end = land.at + P.taxiInMinOf(f) * MIN;
+    if (!f.freezeAt && t >= end + graceMin(f) * MIN) { f.freezeAt = end; persist(); ui.alert = { kind: 'landed', at: end }; renderAlert(); if (ui.route === 'fly') renderFlyLive(); }
+    return;
+  }
   const arr = arrivalMs(f);
   const key = `${f.id}:land:${Math.round(arr / 1000)}`;
   if (t >= arr && t - arr < graceMin(f) * MIN && !ui.fired.has(key) && !f.freezeAt) {
@@ -320,8 +327,8 @@ function renderAlert() {
   const f = activeFlight();
   if (a.kind === 'land' || a.kind === 'landed') {
     bar.innerHTML = `<div class="inner ${a.kind === 'land' ? 'pre' : ''}" role="alert">
-      <div class="row between"><span>${a.kind === 'land' ? 'Expected landing' : 'Assumed landed · levels frozen'}</span><span>${timerZ(f, a.at)}</span></div>
-      <div class="big">${a.kind === 'land' ? 'Shut down when parked' : 'Landed?'}</div>
+      <div class="row between"><span>${a.kind === 'land' ? 'Expected landing' : P.landingAt(f) ? 'Assumed shut down after taxi-in · levels frozen' : 'Assumed landed · levels frozen'}</span><span>${timerZ(f, a.at)}</span></div>
+      <div class="big">${a.kind === 'land' ? 'Tap Landed on touchdown' : P.landingAt(f) ? 'Parked?' : 'Landed?'}</div>
       <div class="row"><button class="btn grow" data-act="alertShutdown">Shut down</button><button class="btn grow" data-act="${a.kind === 'land' ? 'alertDismiss' : 'stillFlying'}">${a.kind === 'land' ? 'Dismiss' : 'Still flying'}</button></div></div>`;
     return;
   }
@@ -413,7 +420,7 @@ function defaultDraft() {
   const tail = state.settings.lastTail && state.tails[state.settings.lastTail] ? state.settings.lastTail : Object.keys(state.tails)[0] || '';
   const cfg = tail ? cfgForTail(tail) : null;
   return {
-    tail, from: '', to: '', ete: '', fuel: '', taxi: String(state.settings.lastTaxi?.[tail] ?? 15), climbMin: '', climbGph: '', cruiseGph: '',
+    tail, from: '', to: '', ete: '', fuel: '', taxi: String(state.settings.lastTaxi?.[tail] ?? 15), climbMin: '', climbGph: '', cruiseGph: '', descentMin: '', descentGph: '', taxiIn: '',
     alt: { on: false, ident: '', ete: '', fuel: '' },
     levels: cfg ? startLevelsFor(tail, cfg) : {},
     resMin: '', resGph: ''
@@ -429,6 +436,7 @@ function startLevelsFor(tail, cfg) {
 function draftFromFlight(f) {
   return {
     tail: f.tail, from: f.from, to: f.to, ete: dur(f.eteMin), fuel: String(f.totalFuel || ''), taxi: String(f.taxiMin), climbMin: f.profileInput?.climbMin || '', climbGph: f.profileInput?.climbGph || '', cruiseGph: f.profileInput?.cruiseGph || '',
+    descentMin: f.profileInput?.descentMin || '', descentGph: f.profileInput?.descentGph || '', taxiIn: f.profileInput?.taxiIn || '',
     alt: { on: !!f.alt?.on, ident: f.alt?.ident || '', ete: f.alt?.eteMin ? dur(f.alt.eteMin) : '', fuel: f.alt?.fuel ? String(f.alt.fuel) : '' },
     levels: Object.fromEntries(Object.entries(f.startLevels).map(([k, v]) => [k, String(v)])),
     resMin: f.resOverride?.min != null ? dur(f.resOverride.min) : '', resGph: f.resOverride?.gph != null ? String(f.resOverride.gph) : ''
@@ -457,7 +465,7 @@ function draftCalc(d) {
   const aboveFloors = cfg.tanks.reduce((a, t) => a + Math.max(0, levels[t.id] - cfg.rules.floor.gal), 0);
   const out = { cfg, ov, levels, aboard, aboveFloors, taxiMin, eteMin, totalFuel };
   if (!isFinite(eteMin) || eteMin <= 0) return { ...out, incomplete: true };
-  const tl = P.buildTimeline(cfg, { taxiMin, eteMin, totalFuel: isFinite(totalFuel) ? totalFuel : 0, climbMin: P.parseDur(d.climbMin), climbGph: num(d.climbGph), cruiseGph: num(d.cruiseGph) });
+  const tl = P.buildTimeline(cfg, { taxiMin, eteMin, totalFuel: isFinite(totalFuel) ? totalFuel : 0, climbMin: P.parseDur(d.climbMin), climbGph: num(d.climbGph), cruiseGph: num(d.cruiseGph), descentMin: P.parseDur(d.descentMin), descentGph: num(d.descentGph), taxiInMin: d.taxiIn === '' || d.taxiIn == null ? null : num(d.taxiIn) });
   const altFuel = d.alt.on ? num(d.alt.fuel) || 0 : 0;
   const reserve = P.reserveGal(cfg);
   const required = reserve + altFuel;
@@ -503,7 +511,13 @@ function viewSetup() {
         <div class="field"><label for="s-cgph">Climb gph</label><input id="s-cgph" class="mono" data-d="climbGph" value="${esc(d.climbGph)}" inputmode="decimal" placeholder="${f1(cfg.burn.climbGph)}"></div>
         <div class="field"><label for="s-crgph">Cruise gph</label><input id="s-crgph" class="mono" data-d="cruiseGph" value="${esc(d.cruiseGph)}" inputmode="decimal" placeholder="auto"></div>
       </div>
-      <div class="mut small">Blank = aircraft defaults. Cruise "auto" is worked out so the total matches ForeFlight.</div>
+      <div class="grid4" style="margin-top:8px">
+        <div class="field"><label for="s-dmin">Descent</label><input id="s-dmin" class="mono" data-fmt="hm" data-d="descentMin" value="${esc(d.descentMin)}" inputmode="numeric" placeholder="${dur(cfg.burn.descentMin || 0)}"></div>
+        <div class="field"><label for="s-dgph">Descent gph</label><input id="s-dgph" class="mono" data-d="descentGph" value="${esc(d.descentGph)}" inputmode="decimal" placeholder="${f1(cfg.burn.descentGph || cfg.burn.cruise)}"></div>
+        <div class="field"><label for="s-tin">Taxi-in min</label><input id="s-tin" class="mono" data-d="taxiIn" value="${esc(d.taxiIn)}" inputmode="numeric" placeholder="${cfg.burn.taxiInMin || 0}"></div>
+        <div></div>
+      </div>
+      <div class="mut small">Blank = aircraft defaults. Cruise "auto" is worked out so the total matches ForeFlight (taxi, climb, cruise and descent); taxi-in is added on top.</div>
       <div id="setupCalc"></div>
     </div>
     <div class="card">
@@ -547,6 +561,8 @@ function renderSetupCalc() {
     <div class="kv"><span class="mut">Taxi share (${f1(b.ground)} gph, run-up incl.)</span><span class="v">${f1(tl.taxiFuel)}</span></div>
     <div class="kv"><span class="mut">Climb ${dur(tl.climbMin)} @ ${f1(tl.climbGph)} gph → level at +${dur(tl.climbMin + ((state.settings.timerFrom || 'takeoff') === 'engine' ? (tl.segments[0]?.min || 0) : 0))}</span><span class="v">${f1(tl.climbFuel)}</span></div>
     <div class="kv"><span class="mut">Cruise ${dur(tl.cruiseMin)} @ ${tl.derived ? 'auto' : num(ui.draft.cruiseGph) > 0 ? 'your' : 'aircraft'} rate</span><span class="v">${f1(tl.cruiseGph)} gph · ${f1((tl.cruiseMin / 60) * tl.cruiseGph)}</span></div>
+    ${tl.descentMin > 0 ? `<div class="kv"><span class="mut">Descent ${dur(tl.descentMin)} @ ${f1(tl.descentGph)} gph</span><span class="v">${f1(tl.descentFuel)}</span></div>` : ''}
+    ${tl.taxiInMin > 0 ? `<div class="kv"><span class="mut">Taxi-in ${tl.taxiInMin} min @ ${f1(b.ground)} gph</span><span class="v">${f1(tl.taxiInFuel)}</span></div>` : ''}
     <div class="kv total"><span>Block ${dur(tl.blockMin)}</span><span class="v">${f1(tl.totalFuel)} gal</span></div>
     <div class="kv"><span class="mut">Aboard ${f1(c.aboard)} · lands with</span><span class="v" style="color:${c.ok ? 'var(--tx)' : 'var(--warn)'}">${f1(c.lands)}</span></div>
     <div class="kv"><span class="mut">Reserve ${dur(cfg.rules.reserve.min)} @ ${f1(P.reserveGph(cfg))}${c.altFuel ? ` + alternate ${f1(c.altFuel)}` : ''}</span><span class="v">${f1(c.required)}</span></div>
@@ -585,7 +601,8 @@ function buildPlanFromDraft() {
     alt: { on: !!d.alt.on, ident: (d.alt.ident || '').toUpperCase(), eteMin: P.parseDur(d.alt.ete) || 0, fuel: num(d.alt.fuel) || 0 },
     resOverride: c.ov.rules ? { min: c.ov.rules.reserve.min, gph: c.ov.rules.reserve.customGph } : null,
     startLevels: c.levels, segs: c.tl.segments, blockMin: c.tl.blockMin, cruiseGph: c.tl.cruiseGph, plannedFuel: c.tl.totalFuel,
-    climbMin: c.tl.climbMin, climbGph: c.tl.climbGph, profileInput: { climbMin: d.climbMin, climbGph: d.climbGph, cruiseGph: d.cruiseGph }
+    climbMin: c.tl.climbMin, climbGph: c.tl.climbGph, descentMin: c.tl.descentMin, descentGph: c.tl.descentGph, taxiInMin: c.tl.taxiInMin,
+    profileInput: { climbMin: d.climbMin, climbGph: d.climbGph, cruiseGph: d.cruiseGph, descentMin: d.descentMin, descentGph: d.descentGph, taxiIn: d.taxiIn }
   });
   setPlan(f, { ...generateFor(f, { startMin: 0, endMin: f.blockMin, segs: f.segs, levels: f.startLevels, currentTank: null }), source: 'generated' }, isNew ? 'Built from setup' : 'Setup changed');
   state.flights[f.id] = f;
@@ -690,7 +707,7 @@ function viewPlan() {
           ${marker}</div>
           <div class="axis mono"><span>${whole || !active ? (timerOffMin(f) ? '+0:00' : 'taxi') : 'now ' + fmtTimer(timerAt(f, T))}</span>${flownMin > 0.5 ? `<span class="nowlbl" style="left:${Math.min(84, Math.max(16, nowPct))}%">now ${fmtTimer(timerAt(f, now()))}</span>` : ''}<span>${fmtTimer((active ? timerAt(f, MS(f, p.endMin)) : planTimer(f, p.endMin)))}</span></div>`;
       })()}
-      <div class="legend"><span><span class="sw" style="background:var(--ph-taxi)"></span>taxi</span><span><span class="sw" style="background:var(--ph-climb)"></span>climb</span><span><span class="sw" style="background:var(--ph-cruise)"></span>cruise</span><span class="dim">|</span>${cfg.tanks.map((t) => `<span><span class="sw" style="background:${colorOf(t.id)}"></span>${esc(t.id)}</span>`).join('')}${shortMin > 0.5 ? '<span>hatched = short</span>' : ''}</div>
+      <div class="legend"><span><span class="sw" style="background:var(--ph-taxi)"></span>taxi</span><span><span class="sw" style="background:var(--ph-climb)"></span>climb</span><span><span class="sw" style="background:var(--ph-cruise)"></span>cruise</span><span><span class="sw" style="background:var(--ph-descent)"></span>descent</span><span class="dim">|</span>${cfg.tanks.map((t) => `<span><span class="sw" style="background:${colorOf(t.id)}"></span>${esc(t.id)}</span>`).join('')}${shortMin > 0.5 ? '<span>hatched = short</span>' : ''}</div>
       <div class="mut small" style="margin-top:4px">${timerOffMin(f) ? `Times are your flight timer, started at engine start: taxi is +0:00 to +${dur(f.taxiMin || 0)}, takeoff at +${dur(f.taxiMin || 0)}.` : `Times are your flight timer, which starts at takeoff (+0:00). Taxi comes before it and isn't on the timer.`} <a href="#aircraft">Change</a></div>
     </div>
     <div class="legs">
@@ -890,25 +907,31 @@ function renderFlyLive() {
     burnCard = `<div class="card">
       <div class="row between"><span class="mut small">Fuel burn</span><span class="mono small mut">used ${f1(est.used)} gal</span></div>
       <div class="row between" style="align-items:baseline"><span style="font-size:20px;font-weight:600"><span class="ph-${ph.phase}" style="text-transform:capitalize">${ph.phase}</span> · <span class="mono">${f1(ph.gph)}</span> <span class="small mut">gph</span></span>
-        <span class="small mut">${climbing ? `since ${fmtTimer(timerAt(f, ph.since))} · level ${ph.until ? `${ph.until > T ? 'exp. ' : ''}${fmtTimer(timerAt(f, ph.until))}` : `exp. ${fmtTimer(timerAt(f, ph.since + P.climbLenMin(f, P.activeClimb(f, T)) * MIN))}, tap Level off`}` : ph.phase === 'taxi' ? 'before takeoff' : ''}</span></div>
-      ${ph.phase === 'taxi' ? '' : `<div class="grid3">
+        <span class="small mut">${climbing ? `since ${fmtTimer(timerAt(f, ph.since))} · level ${ph.until ? `${ph.until > T ? 'exp. ' : ''}${fmtTimer(timerAt(f, ph.until))}` : `exp. ${fmtTimer(timerAt(f, ph.since + P.climbLenMin(f, P.activeClimb(f, T)) * MIN))}, tap Level off`}` : ph.phase === 'descent' ? `since ${fmtTimer(timerAt(f, ph.since))}${ph.until ? ` · level ${fmtTimer(timerAt(f, ph.until))}` : ' · Level off between steps'}` : ph.taxiIn ? `taxi-in since ${fmtTimer(timerAt(f, ph.since))}` : ph.phase === 'taxi' ? 'before takeoff' : ''}</span></div>
+      ${ph.phase === 'taxi' && !ph.taxiIn ? '' : ph.taxiIn ? `<div class="grid2">
+        <button class="btn" data-act="openSheet" data-sheet="check">GI 275</button>
+        <button class="btn outline" data-act="openSheet" data-sheet="shutdown">Shut down</button></div>` : ph.phase === 'descent' ? `<div class="grid3">
+        <button class="btn outline" data-act="openSheet" data-sheet="level">Level off</button>
+        <button class="btn outline" data-act="openSheet" data-sheet="landed">Landed</button>
+        <button class="btn" data-act="openSheet" data-sheet="check">GI 275</button></div>` : `<div class="grid2">
         ${climbing ? '<button class="btn outline" data-act="openSheet" data-sheet="level">Level off</button>' : '<button class="btn" data-act="openSheet" data-sheet="climb">Climb</button>'}
+        <button class="btn" data-act="openSheet" data-sheet="descent">Descend</button>
         <button class="btn" data-act="openSheet" data-sheet="burn" ${climbing ? 'disabled' : ''}>Set burn</button>
         <button class="btn" data-act="openSheet" data-sheet="check">GI 275</button></div>`}
     </div>`;
   }
   let dest = '';
-  if (started && !est.frozen) {
+  if (started && !est.frozen && !P.landingAt(f, T)) {
     const rs = P.remainingSegs(f, T);
-    const need = P.fuelBetween(rs.segs, rs.startMin, rs.endMin);
+    const need = P.fuelBetween(rs.segs, rs.startMin, rs.endMin); // through taxi-in
     const req = requiredLanding(f, T);
     const lands = est.total - need;
-    const arr = MS(f, rs.endMin);
+    const arr = MS(f, rs.landMin ?? rs.endMin);
     const ok = lands >= req - P.TOL;
     const resRate = P.reserveGph(cfg);
     const reachAt = !ok && est.total > req ? MS(f, rs.startMin + P.timeForFuel(rs.segs, rs.startMin, est.total - req)) : null;
     dest = `<div class="card">
-      <div class="row between"><span class="mut small">To ${esc(f.divert?.ident || f.to || 'destination')}</span><span style="text-align:right">${timerZ(f, arr)}<br><span class="z">${dur(rs.endMin - rs.startMin)} to go</span></span></div>
+      <div class="row between"><span class="mut small">To ${esc(f.divert?.ident || f.to || 'destination')}</span><span style="text-align:right">${timerZ(f, arr)}<br><span class="z">${dur((rs.landMin ?? rs.endMin) - rs.startMin)} to go</span></span></div>
       <div class="kv"><span class="mut">Lands with</span><span class="v" style="color:${ok ? 'var(--tx)' : 'var(--warn)'}">${f1(lands)} = ${dur((lands / resRate) * 60)} @ ${f1(resRate)}</span></div>
       <div class="kv"><span class="mut">Reserve${f.alt?.on ? ' + alternate' : ''}</span><span class="v">${f1(req)}</span></div>
       ${!ok ? `<div class="issue error">${ICON.warn}<div>${f1(req - lands)} gal short of reserve${reachAt ? `; reserve reached at ${fmtTimer(timerAt(f, reachAt))} (${hm(reachAt)})` : ''}. Update ETE to replan or plan a fuel stop.</div></div>` : ''}
@@ -949,11 +972,13 @@ function openSheet(name, data = {}) {
   if (name === 'check') Object.assign(sd, { at: toField(t), used: '', gph: '', rebuild: true });
   if (name === 'ete') {
     const rs = P.remainingSegs(f, t);
-    Object.assign(sd, { at: toField(t), ete: '', fuel: '', gph: '', altFuel: f.alt?.on ? String(f.alt.fuel || '') : '', divert: false, ident: '', prevEte: rs.endMin - rs.startMin });
+    Object.assign(sd, { at: toField(t), ete: '', fuel: '', gph: '', altFuel: f.alt?.on ? String(f.alt.fuel || '') : '', divert: false, ident: '', prevEte: (rs.landMin ?? rs.endMin) - rs.startMin });
   }
   if (name === 'shutdown') Object.assign(sd, { at: toField(f.freezeAt || t), used: '' });
   if (name === 'climb') Object.assign(sd, { at: toField(t), len: '', gph: String(f.climbGph || f.cfg.burn.climbGph), rebuild: true });
   if (name === 'level') Object.assign(sd, { at: toField(t), rebuild: true });
+  if (name === 'descent') { const prev = f.events.filter((e) => e.type === 'descent' && e.at <= t).sort((a, b) => a.at - b.at).pop(); Object.assign(sd, { at: toField(t), gph: String(prev ? prev.gph : P.descentGphOf(f)), rebuild: true }); }
+  if (name === 'landed') Object.assign(sd, { at: toField(t), rebuild: true });
   if (name === 'gauge') Object.assign(sd, { at: f.engineStart ? toField(t) : hm(t), tmode: f.engineStart ? sd.tmode : 'clock', vals: {}, note: '' });
   if (name === 'burn') Object.assign(sd, { at: toField(t), gph: '', scope: 'now', was: P.cruiseRateAt(f, t) });
   if (name === 'start') sd.climb = dur(f.climbMin ?? f.cfg.burn.climbMin);
@@ -973,7 +998,7 @@ function renderSheet() {
     return;
   }
   const f = sheetFlight();
-  const body = { gauge: sheetGauge, burn: sheetBurn, edit: sheetEdit, switch: sheetSwitch, start: sheetStart, climb: sheetClimb, level: sheetLevel, check: sheetCheck, ete: sheetEte, shutdown: sheetShutdown }[ui.sheet];
+  const body = { gauge: sheetGauge, burn: sheetBurn, edit: sheetEdit, switch: sheetSwitch, start: sheetStart, climb: sheetClimb, level: sheetLevel, check: sheetCheck, ete: sheetEte, shutdown: sheetShutdown, descent: sheetDescent, landed: sheetLanded }[ui.sheet];
   if (!body || !f) { ui.sheet = null; host.innerHTML = ''; return; }
   const [title, inner] = body(f);
   host.innerHTML = `<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
@@ -1099,7 +1124,7 @@ function sheetEte(f) {
     <button class="btn primary block" data-act="saveEte">Save &amp; rebuild plan</button>`];
 }
 
-const EV_LABEL = { gauge: 'Gauges', burn: 'Cruise burn', takeoff: 'Takeoff', engine: 'Taxi', switch: 'Switch', climb: 'Climb', level: 'Level off', check: 'Fuel check', ete: 'ETE update', shutdown: 'Shutdown', reactivate: 'Reactivation', note: 'Note', park: 'Tank done', unpark: 'Tank back in use' };
+const EV_LABEL = { gauge: 'Gauges', burn: 'Cruise burn', takeoff: 'Takeoff', engine: 'Taxi', switch: 'Switch', climb: 'Climb', level: 'Level off', check: 'Fuel check', ete: 'ETE update', shutdown: 'Shutdown', reactivate: 'Reactivation', note: 'Note', park: 'Tank done', unpark: 'Tank back in use', descent: 'Descent', landing: 'Landing' };
 
 function sheetEdit(f) {
   const k = ui.sd.kind, isNew = ui.sd.i < 0;
@@ -1118,6 +1143,8 @@ function sheetEdit(f) {
       <div class="field"><label for="sd-note">Note</label><input id="sd-note" data-sd="note" value="${esc(ui.sd.note || '')}"></div>`;
     if (k === 'burn') fields += `<div class="field"><label for="sd-gph">Cruise fuel flow (gph)</label><input id="sd-gph" class="big key" data-sd="gph" value="${esc(ui.sd.gph)}" inputmode="decimal"></div>
       <label class="check"><input type="checkbox" data-sd="allScope" ${ui.sd.allScope ? 'checked' : ''}>Applies to the whole cruise</label>`;
+    if (k === 'descent') fields += `<div class="grid2"><div class="field"><label for="sd-len">Step length (opt.)</label><input id="sd-len" class="big" data-fmt="hm" data-sd="len" value="${esc(ui.sd.len)}" inputmode="numeric" placeholder="until next entry"></div>
+      <div class="field"><label for="sd-dgph">Descent gph</label><input id="sd-dgph" class="big" data-sd="gph" value="${esc(ui.sd.gph)}" inputmode="decimal"></div></div>`;
     if (k === 'note') fields += `<div class="field"><label for="sd-note">Note</label><textarea id="sd-note" data-sd="note" rows="3" class="key" placeholder="Anything worth remembering about this flight">${esc(ui.sd.note || '')}</textarea></div>`;
     if (k === 'check' || k === 'shutdown') fields += `<div class="field"><label for="sd-used">GI 275 fuel used since start</label><input id="sd-used" class="big ${k === 'check' ? 'key' : ''}" data-sd="used" value="${esc(ui.sd.used)}" inputmode="decimal"></div>`;
     if (k === 'check') fields += `<div class="field"><label for="sd-flow">Fuel flow (sets cruise burn from here; blank = no change)</label><input id="sd-flow" class="big" data-sd="flow" value="${esc(ui.sd.flow)}" inputmode="decimal"></div>`;
@@ -1140,7 +1167,7 @@ function openEdit(f, i, kind) {
   Object.assign(ui.sd, {
     tank: e.tank || f.cfg.tanks[0].id,
     len: e.until ? dur((e.until - e.at) / MIN) : '',
-    gph: String(e.gph || (e.type === 'burn' ? P.cruiseRateAt(f, e.at) : f.climbGph || f.cfg.burn.climbGph)),
+    gph: String(e.gph || (e.type === 'burn' ? P.cruiseRateAt(f, e.at) : e.type === 'descent' ? P.descentGphOf(f) : f.climbGph || f.cfg.burn.climbGph)),
     allScope: e.scope === 'all',
     flow: e.type === 'check' && e.setsBurn ? String(e.gph) : '',
     vals: e.type === 'gauge' ? Object.fromEntries(Object.entries(e.readings || {}).map(([k, v]) => [k, String(v)])) : {},
@@ -1168,7 +1195,7 @@ function saveEdit() {
     f.taxiMin = taxi;
     f.engineStart = to - taxi * MIN;
     f.takeoff = to;
-    const tl = P.buildTimeline(f.cfg, { taxiMin: taxi, eteMin: f.eteMin, climbMin: f.climbMin, climbGph: f.climbGph, cruiseGph: f.cruiseGph });
+    const tl = P.buildTimeline(f.cfg, { taxiMin: taxi, eteMin: f.eteMin, climbMin: f.climbMin, climbGph: f.climbGph, cruiseGph: f.cruiseGph, descentMin: f.descentMin ?? 0, descentGph: f.descentGph, taxiInMin: f.taxiInMin ?? 0 });
     f.segs = tl.segments; f.blockMin = tl.blockMin;
     f.startTank = ui.sd.tank;
     const ev = f.events[i]; if (ev) { ev.at = f.engineStart; ev.tank = ui.sd.tank; ev.edited = now(); }
@@ -1198,6 +1225,8 @@ function saveEdit() {
     if (!Object.keys(readings).length) return toast('Enter at least one tank');
     ev.readings = readings; ev.note = (ui.sd.note || '').trim() || null; ev.phase = gaugePhase(f, t);
   }
+  if (k === 'descent') { const g = num(ui.sd.gph); if (!(g > 0)) return toast('Enter the descent fuel flow'); ev.gph = g; const len = P.parseDur(ui.sd.len); ev.until = isFinite(len) && len > 0 ? t + len * MIN : null; }
+  if (k === 'landing') { const other = f.events.find((x) => x.type === 'landing' && x !== f.events[i]); if (other) return toast('There is already a landing; edit that one'); f.freezeAt = null; }
   if (k === 'note') { const n = (ui.sd.note || '').trim(); if (!n) return toast('Type a note'); ev.note = n; }
   if (k === 'burn') { const g = num(ui.sd.gph); if (!(g > 0)) return toast('Enter the cruise fuel flow'); ev.gph = g; ev.scope = ui.sd.allScope ? 'all' : undefined; }
   if (k === 'climb') { const len = P.parseDur(ui.sd.len); ev.until = isFinite(len) && len > 0 ? t + len * MIN : null; ev.gph = num(ui.sd.gph) > 0 ? num(ui.sd.gph) : ev.gph || f.climbGph; }
@@ -1244,6 +1273,23 @@ function sheetBurn(f) {
     <button class="btn primary block" data-act="saveBurn">Save &amp; rebuild plan</button>`];
 }
 
+function sheetDescent(f) {
+  const cur = P.activeDescent(f, now());
+  return [cur ? 'Next descent step' : 'Descend', `${timeField('sd-at', 'Started down at')}
+    <div class="field"><label for="sd-dgph">Descent gph (GI 275 fuel flow)</label><input id="sd-dgph" class="big key" data-sd="gph" value="${esc(ui.sd.gph)}" inputmode="decimal"></div>
+    <div class="mut small">Record each step of a stepped descent with its own fuel flow, and tap Level off between steps (burn goes back to cruise). It lasts until Level off, Climb or Landed. The rest of the plan assumes this rate until landing.</div>
+    <div id="sheetPreview"></div>
+    <label class="check"><input type="checkbox" data-sd="rebuild" ${ui.sd.rebuild ? 'checked' : ''}>Rebuild rest of plan</label>
+    <button class="btn primary block" data-act="saveDescent">Save descent</button>`];
+}
+
+function sheetLanded(f) {
+  return ['Landed', `${timeField('sd-at', 'Landed at')}
+    <div class="mut small">Taxi-in burns at the ground rate (${f1(P.groundGph(f))} gph) until you shut down. The plan expects ${P.taxiInMinOf(f)} min of taxi.</div>
+    <div id="sheetPreview"></div>
+    <button class="btn primary block" data-act="saveLanded">Save landing</button>`];
+}
+
 function sheetLevel(f) {
   const ph = P.phaseAt(f, now());
   const exp = ph.phase === 'climb' && !ph.until ? ph.since + P.climbLenMin(f, P.activeClimb(f, now())) * MIN : null;
@@ -1257,7 +1303,9 @@ function sheetLevel(f) {
 function sheetShutdown(f) {
   const arr = arrivalMs(f);
   const picks = [];
-  if (f.freezeAt) picks.push([f.freezeAt, `Assumed landing ${fmtTimer(timerAt(f, f.freezeAt))}`]);
+  const landEv = P.landingAt(f);
+  if (landEv && !f.freezeAt) { const end = landEv.at + P.taxiInMinOf(f) * MIN; if (end < now()) picks.push([end, `Landed + taxi-in ${fmtTimer(timerAt(f, end))}`]); }
+  if (f.freezeAt) picks.push([f.freezeAt, `${landEv ? 'Assumed shutdown' : 'Assumed landing'} ${fmtTimer(timerAt(f, f.freezeAt))}`]);
   else if (arr && arr < now()) picks.push([arr, `Expected landing ${fmtTimer(timerAt(f, arr))}`]);
   return ['End flight', `${timeField('sd-at', 'Shut down at')}
     ${picks.length ? `<div class="row wrap">${picks.map(([ms, label]) => `<button class="btn sm" data-act="sdAtMs" data-ms="${ms}">${esc(label)}</button>`).join('')}</div>` : ''}
@@ -1474,6 +1522,20 @@ function saveSheet(kind) {
     later = [Math.max(t, now()), ui.sd.divert ? 'divert' : 'ETE update'];
     msg = ui.sd.divert ? `Diverting to ${ev.divert}` : `ETE ${dur(ete)} saved`;
   }
+  if (kind === 'descent') {
+    const gph = num(ui.sd.gph);
+    if (!(gph > 0)) return toast('Enter the descent fuel flow');
+    f.events.push({ type: 'descent', at: t, enteredAt, gph });
+    if (ui.sd.rebuild) later = [Math.max(t, now()), 'descent'];
+    msg = `Descending at ${f1(gph)} gph`;
+  }
+  if (kind === 'landed') {
+    if (P.landingAt(f)) return toast('Landing already recorded; edit it in history');
+    f.events.push({ type: 'landing', at: t, enteredAt });
+    f.freezeAt = null; f.snoozeUntil = null;
+    later = [Math.max(t, now()), 'landed'];
+    msg = 'Landed · taxi-in';
+  }
   if (kind === 'climb') {
     const len = P.parseDur(ui.sd.len), gph = num(ui.sd.gph);
     f.events.push({ type: 'climb', at: t, enteredAt, gph: gph > 0 ? gph : f.climbGph || f.cfg.burn.climbGph, until: isFinite(len) && len > 0 ? t + len * MIN : null });
@@ -1531,7 +1593,8 @@ function flightSummary(f) {
   const plannedBlock = f.blockMin, plannedFuel = f.plannedFuel ?? f.totalFuel;
   const actualBlock = f.engineStart && f.shutdown ? (f.shutdown - f.engineStart) / MIN : null;
   const plannedFlight = f.eteMin;
-  const actualFlight = takeoffOf(f) && f.shutdown ? (f.shutdown - takeoffOf(f)) / MIN : null;
+  const landEv = P.landingAt(f);
+  const actualFlight = takeoffOf(f) && (landEv || f.shutdown) ? ((landEv ? landEv.at : f.shutdown) - takeoffOf(f)) / MIN : null; // takeoff to landing when recorded
   const checks = f.events.filter((e) => e.type === 'check');
   const actualFuel = f.finalUsed ?? null;
   const flightHrs = actualBlock ? Math.max(0.01, (actualBlock - f.taxiMin) / 60) : null;
@@ -1571,7 +1634,7 @@ function newFuelDraft(tail) {
   const cfg = cfgForTail(tail);
   const st = tailFuelState(tail);
   return {
-    id: null, tail, at: now(), tz: phoneTZ(), airport: '', request: 'tabs', amounts: {},
+    id: null, tail, at: now(), tz: phoneTZ(), airport: '', request: 'full', amounts: {},
     before: Object.fromEntries(cfg.tanks.map((t) => [t.id, st ? Math.round(Math.max(0, st.levels[t.id]) * 10) / 10 : ''])),
     beforeLabel: st ? st.label : null,
     startReading: '0', steps: cfg.fillOrder.map((id) => ({ tank: id, reading: '' })),
@@ -1800,6 +1863,8 @@ function viewFlightDetail(f) {
     shutdown: `Shutdown${e.assumed ? ' (assumed)' : ''}${e.used ? ` · ${f1(e.used)} gal used` : ''}`,
     reactivate: 'Reactivated',
     note: `Note · ${e.note || ''}`,
+    descent: `Descent @ ${f1(e.gph)} gph${e.until ? ` for ${dur((e.until - e.at) / MIN)}` : ''}`,
+    landing: 'Landed',
     park: `Done with ${e.tank}${e.level != null ? ` (left at ${f1(e.level)} calc.)` : ''}`,
     unpark: `${e.tank} back in use`
   }[e.type] || e.type);
@@ -1819,7 +1884,7 @@ function viewFlightDetail(f) {
     </div>
     ${f.autoEnded || (f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown')) ? `<div class="issue warn">${ICON.warn}<div>${f.autoEnded ? `Ended automatically at the assumed landing time (${f.shutdown ? fmtTimer(timerAt(f, f.shutdown)) : '—'}).` : 'No shutdown was recorded, so fuel kept burning until the flight was auto-saved.'} Tap <b>Shutdown</b> below to set when you actually shut down.</div></div>` : ''}
     ${editable ? `<div class="stack" style="gap:8px"><div class="mut small">Tap an entry to correct it. Add anything you missed:</div>
-      <div class="row wrap">${['note', 'switch', 'climb', 'level', 'burn', 'check', 'gauge', ...(f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown') ? ['shutdown'] : [])].map((k) => `<button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="${k}">+ ${EV_LABEL[k]}</button>`).join('')}</div></div>` : `<div class="row"><button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="note">+ Note</button></div>`}
+      <div class="row wrap">${['note', 'switch', 'climb', 'level', 'descent', ...(P.landingAt(f) ? [] : ['landing']), 'burn', 'check', 'gauge', ...(f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown') ? ['shutdown'] : [])].map((k) => `<button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="${k}">+ ${EV_LABEL[k]}</button>`).join('')}</div></div>` : `<div class="row"><button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="note">+ Note</button></div>`}
     ${f.engineStart ? replayCard(f) : ''}
     ${planVersionsCard(f)}
     ${setupCard(f)}
@@ -1864,6 +1929,7 @@ function setupCard(f) {
   return `<details class="card"><summary>Flight setup</summary>
     ${kv('ForeFlight ETE · total fuel', `${dur(f.eteMin)} · ${f.totalFuel ? f1(f.totalFuel) : '—'}`)}
     ${kv('Taxi · climb', `${f.taxiMin} min · ${dur(f.climbMin ?? f.cfg.burn.climbMin)} @ ${f1(f.climbGph || f.cfg.burn.climbGph)} gph`)}
+    ${f.descentMin != null ? kv('Descent · taxi-in', `${dur(f.descentMin)} @ ${f1(f.descentGph)} gph · ${f.taxiInMin ?? 0} min`) : ''}
     ${kv('Planned cruise', `${f1(f.cruiseGph)} gph${f.profileInput?.cruiseGph ? ' (entered)' : ' (from ForeFlight)'}`)}
     ${kv('Starting fuel', f.cfg.tanks.map((x) => `${esc(x.id)} ${f1(f.startLevels[x.id])}`).join(' · '))}
     ${kv('Reserve', `${dur(f.cfg.rules.reserve.min)} @ ${f1(P.reserveGph(f.cfg))} = ${f1(P.reserveGal(f.cfg))} gal`)}
@@ -1910,7 +1976,7 @@ function flightCsv(f) {
 const OVR_FIELDS = [
   ['Burn profiles', [
     ['burn.ground', 'Ground gph (incl. run-up)'], ['burn.climbGph', 'Climb gph'], ['burn.climbMin', 'Initial climb minutes'], ['burn.stepClimbMin', 'Mid-flight climb minutes'],
-    ['burn.cruise', 'Cruise gph (plan default & reserve)']]],
+    ['burn.cruise', 'Cruise gph (plan default & reserve)'], ['burn.descentGph', 'Descent gph'], ['burn.descentMin', 'Descent minutes'], ['burn.taxiInMin', 'Taxi-in minutes']]],
   ['Reserve', [
     ['rules.reserve.min', 'Reserve minutes'], ['rules.reserve.rate', 'Reserve rate', ['cruise', 'custom']],
     ['rules.reserve.customGph', 'Custom reserve gph'], ['rules.reserve.mode', 'Reserve rule', ['hard', 'warn', 'off']]]],
@@ -2181,6 +2247,8 @@ const actions = {
   saveStart: () => saveSheet('start'),
   saveClimb: () => saveSheet('climb'),
   saveLevel: () => saveSheet('level'),
+  saveDescent: () => saveSheet('descent'),
+  saveLanded: () => saveSheet('landed'),
   saveBurn: () => saveSheet('burn'),
   saveGauge: () => saveSheet('gauge'),
   exportGauges() {

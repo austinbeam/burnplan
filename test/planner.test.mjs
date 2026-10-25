@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { BUILTIN_TYPES } from '../js/types.js';
 import * as P from '../js/planner.js';
 
-const type = BUILTIN_TYPES[0];
+const typeFull = BUILTIN_TYPES[0];
+// Older tests pin numbers from the taxi/climb/cruise model: descent and taxi-in off reproduces it exactly.
+const type = { ...typeFull, burn: { ...typeFull.burn, descentMin: 0, taxiInMin: 0 } };
 const full = { LT: 17, LM: 25, RM: 25, RT: 17 };
 
 function plan(cfg, { taxiMin, eteMin, totalFuel, levels = full }) {
@@ -323,4 +325,56 @@ test('ForeFlight fuel-to-destination on an ETE update never changes cruise burn'
   // legacy entry saved before the fix (no gphSet) with ForeFlight fuel: ignored too
   f.events[2] = { type: 'ete', at: to + 120 * m, eteMin: 61, fuelToDest: 15.1 };
   assert.equal(P.cruiseRateAt(f, to + 130 * m), 13.7);
+});
+
+test('timeline: descent before landing and taxi-in after it', () => {
+  const cfg = P.resolveConfig(typeFull);
+  const tl = P.buildTimeline(cfg, { taxiMin: 15, eteMin: 180, totalFuel: 50, descentMin: 20, descentGph: 10, taxiInMin: 6 });
+  assert.deepEqual(tl.segments.map((x) => x.phase), ['taxi', 'climb', 'cruise', 'descent', 'taxi']);
+  assert.equal(tl.blockMin, 15 + 180 + 6);
+  assert.equal(tl.landMin, 195);
+  const d = tl.segments[3];
+  assert.equal(d.start + d.min, 195);
+  // cruise is derived after taking out taxi, climb and descent; taxi-in is extra on top of ForeFlight
+  const expCruise = (50 - (15 / 60) * 4.5 - (14 / 60) * 20 - (20 / 60) * 10) / ((180 - 14 - 20) / 60);
+  assert.ok(Math.abs(tl.cruiseGph - expCruise) < 1e-9);
+  assert.ok(Math.abs(tl.totalFuel - (50 + (6 / 60) * 4.5)) < 1e-9);
+});
+
+test('stepped descent, level between steps, landing then taxi-in', () => {
+  const cfg = P.resolveConfig(typeFull);
+  const tl = P.buildTimeline(cfg, { taxiMin: 15, eteMin: 120, totalFuel: 0, cruiseGph: 14, descentMin: 15, descentGph: 11, taxiInMin: 5 });
+  const m = 60000, es = Date.UTC(2026, 9, 25, 13, 0), to = es + 15 * m;
+  const f = { cfg, engineStart: es, takeoff: to, startLevels: { ...full, LM: 100 }, startTank: 'LM', segs: tl.segments, cruiseGph: 14,
+    descentMin: 15, descentGph: 11, taxiInMin: 5, climbMin: 14,
+    events: [{ type: 'climb', at: to, gph: 20, until: to + 14 * m, initial: true }] };
+  assert.equal(P.arrivalOf(f), to + 120 * m);
+  // cruising: remaining is cruise, then the planned descent, then taxi-in
+  let rs = P.remainingSegs(f, to + 60 * m);
+  assert.deepEqual(rs.segs.map((x) => x.phase), ['cruise', 'descent', 'taxi']);
+  assert.equal(rs.landMin, 15 + 120);
+  assert.equal(rs.endMin, 15 + 120 + 5);
+  assert.ok(Math.abs(rs.segs[1].min - 15) < 1e-9);
+  // first step down at 9 gph, level off, second step at 8 gph
+  f.events.push({ type: 'descent', at: to + 90 * m, gph: 9 });
+  f.events.push({ type: 'level', at: to + 95 * m });
+  f.events.push({ type: 'descent', at: to + 105 * m, gph: 8 });
+  assert.equal(P.phaseAt(f, to + 92 * m).phase, 'descent');
+  assert.equal(P.phaseAt(f, to + 92 * m).gph, 9);
+  assert.equal(P.phaseAt(f, to + 100 * m).gph, 14);
+  assert.equal(P.phaseAt(f, to + 110 * m).gph, 8);
+  rs = P.remainingSegs(f, to + 110 * m);
+  assert.deepEqual(rs.segs.map((x) => x.phase), ['descent', 'taxi']);
+  assert.equal(rs.segs[0].gph, 8);
+  const u0 = P.estimate(f, cfg, to + 90 * m).used;
+  const u1 = P.estimate(f, cfg, to + 115 * m).used;
+  assert.ok(Math.abs(u1 - u0 - ((5 / 60) * 9 + (10 / 60) * 14 + (10 / 60) * 8)) < 1e-9);
+  // landed early: taxi-in at the ground rate, arrival is the landing, plan ends 5 min after it
+  f.events.push({ type: 'landing', at: to + 115 * m });
+  assert.equal(P.arrivalOf(f), to + 115 * m);
+  assert.equal(P.phaseAt(f, to + 117 * m).phase, 'taxi');
+  assert.equal(P.phaseAt(f, to + 117 * m).gph, 4.5);
+  rs = P.remainingSegs(f, to + 117 * m);
+  assert.deepEqual(rs.segs.map((x) => x.phase), ['taxi']);
+  assert.equal(rs.endMin, 15 + 115 + 5);
 });

@@ -27,6 +27,9 @@ export const BUILTIN_TYPES = [
       climbGph: 20,
       climbMin: 14,       // initial climb, per-flight override in Setup
       stepClimbMin: 5,    // expected length of a mid-flight climb when none is entered
+      descentMin: 15,     // planned descent before landing, per-flight override in Setup
+      descentGph: 11,     // planned descent burn; each recorded descent step can set its own
+      taxiInMin: 5,       // taxi after landing, at the ground rate
       cruise: 15       // cruise burn: planning default when ForeFlight fuel is blank, and the reserve rate
     },
     rules: {
