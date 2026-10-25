@@ -43,6 +43,7 @@ On every user-visible change, bump **both** `APP_VERSION` in `js/app.js` and `VE
 
 - Don't plan any tank below the floor (4 gal by default, a hard rule). "Ever is a strong word": this applies to planning, and the plan is still allowed to be overridden.
 - Burn the sides evenly and keep the imbalance under the limit (15 gal, a warning). Sequence: LM → RM (toggling as needed), then LT/RT. Finish on the right side and land balanced. Make legs as long as possible.
+- A flight snapshots its config (`f.cfg`) when built. The one exception: changing a tail's floor (gal or mode) in Settings updates that tail's current draft or active flight's `f.cfg` floor (`applyFloorToFlight`). Austin's rule: this must **not** create a plan version by itself. The current plan is just checked (flagged) against the new floor, and the next rebuild (manual or automatic) uses it. Closed flights keep their floor.
 - The user can edit the plan freely, and broken rules are flagged rather than blocked. Planning changes and actual events are kept separate. Every plan change is versioned (`setPlan(f, plan, reason)` archives the old one).
 - All four tanks are approved for takeoff and landing on this airplane; this is configurable per type.
 - Rules and tanks are configurable per type and per tail (tail overrides). Custom types are possible.

@@ -4,7 +4,7 @@ import * as S from './store.js';
 import { loadGuide } from './guide.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v36'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v37'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -2230,6 +2230,19 @@ function setOverride(tailId, path, raw) {
   persist();
 }
 
+// A floor changed in the tail's settings applies to that tail's current flight (draft or active), which
+// otherwise keeps the config it was built with. The plan isn't changed: it's flagged against the new floor
+// until the pilot rebuilds it, and every rebuild from then on uses the new floor.
+function applyFloorToFlight(tailId) {
+  const f = activeFlight();
+  if (!f || f.tail !== tailId || f.status === 'closed') return;
+  const floor = cfgForTail(tailId)?.rules.floor;
+  if (!floor || (floor.gal === f.cfg.rules.floor.gal && floor.mode === f.cfg.rules.floor.mode)) return;
+  f.cfg.rules.floor = { ...floor };
+  persist();
+  toast(`Current flight now uses the ${floor.gal} gal floor. Rebuild the plan to apply it.`, 4000);
+}
+
 function updateType(id, fn) {
   const t = state.customTypes[id];
   if (!t) return;
@@ -2645,7 +2658,7 @@ function onField(ev, committed) {
     render();
     return;
   }
-  if (el.dataset.ovr) { setOverride(decodeURIComponent(ui.sub), el.dataset.ovr, el.value.trim()); render(); return; }
+  if (el.dataset.ovr) { const tid = decodeURIComponent(ui.sub); setOverride(tid, el.dataset.ovr, el.value.trim()); if (committed && el.dataset.ovr.startsWith('rules.floor')) applyFloorToFlight(tid); render(); return; }
   if (el.dataset.tab) {
     const tail = state.tails[decodeURIComponent(ui.sub)];
     tail.overrides = tail.overrides || {};
