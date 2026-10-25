@@ -731,6 +731,7 @@ function viewFly() {
     ${f.engineStart ? `
       <button class="btn primary block" data-act="openSheet" data-sheet="switch">Record switch</button>
       <div class="row"><button class="btn outline grow" data-act="openSheet" data-sheet="ete">Update ETE</button><button class="btn grow" data-act="openSheet" data-sheet="check">Fuel check</button></div>
+      <button class="btn sm" data-act="resetStart" style="align-self:flex-start">Undo start</button>
       <div class="row"><a class="btn grow" href="#log/${f.id}">Edit history</a><button class="btn danger grow" data-act="openSheet" data-sheet="shutdown">End flight</button></div>`
       : `<button class="btn primary block" data-act="openSheet" data-sheet="start">Start flight</button>
          <div class="mut small">Open this any time after takeoff: enter your flight timer and catch up on what you've done so far.</div>`}
@@ -908,11 +909,22 @@ function timeField(id, label) {
   <div class="z" id="sdAtOther"></div></div>`;
 }
 
+// A takeoff more than an hour past this flight's whole ETE is almost certainly a typo
+// (e.g. a minutes:seconds reading such as 20:00 typed for 20 minutes).
+function startLooksWrong(f, takeoffMs) {
+  const sinceMin = (now() - takeoffMs) / MIN;
+  if (ui.sd.longOk || !(sinceMin > (f.eteMin || 0) + 60)) return null;
+  const d = P.parseDur(ui.sd.at);
+  const guess = ui.sd.tmode === 'timer' && isFinite(d) ? dur(Math.floor(d / 60) + Math.round((d % 60) / 60)) : null;
+  return { sinceMin, guess: guess && guess !== ui.sd.at && P.parseDur(guess) <= (f.eteMin || 0) + 60 ? guess : null };
+}
+const hrsMins = (m) => `${Math.floor(m / 60)} h ${String(Math.round(m % 60)).padStart(2, '0')} min`;
+
 function sheetStart(f) {
   const tanks = f.cfg.tanks;
   const rows = ui.sd.rows || [];
   const manual = ui.sd.sofar === 'manual';
-  return ['Start flight', `${timeField('sd-at', (tm) => (tm === 'timer' ? 'Flight timer right now' : `Takeoff time (${clockLabel()} clock)`))}
+  return ['Start flight', `${timeField('sd-at', (tm) => (tm === 'timer' ? 'Flight timer right now (h:mm)' : `Takeoff time (${clockLabel()} clock)`))}
     <div class="field"><label>Takeoff tank</label><div class="tankpick">${tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span><span class="s">${f1(f.startLevels[t.id])}</span></button>`).join('')}</div></div>
     <div class="field"><span class="lbl">Since takeoff</span><div class="grid2">
       <button class="btn ${!manual ? 'outline' : ''}" data-act="sdSofar" data-v="plan" aria-pressed="${!manual}">Followed the plan</button>
@@ -1167,6 +1179,13 @@ function renderSheetPreview() {
     ? `Takeoff ${hm(t)} · ${zt(t)}`
     : ui.sd.tmode === 'timer' ? `${hm(t)} local · ${zt(t)}` : (takeoffOf(f) ? `timer ${fmtTimer(timerAt(f, t))} · ${zt(t)}` : zt(t));
   if (ui.sheet === 'start') {
+    if (other && ui.sd.tmode === 'timer') other.innerHTML = `${hrsMins((now() - t) / MIN)} since takeoff · took off ${hm(t)} · ${utcHM(t)}`;
+    const bad = startLooksWrong(f, t);
+    if (bad) {
+      box.innerHTML = `<div class="issue error" style="flex-direction:column;gap:8px"><div class="row" style="gap:10px">${ICON.warn}<div>That's <b>${hrsMins(bad.sinceMin)}</b> since takeoff, longer than this whole flight (${dur(f.eteMin)}). The flight timer is <b>hours:minutes</b>.</div></div>
+        <div class="row wrap">${bad.guess ? `<button class="btn sm outline" data-act="sdUseGuess" data-v="${bad.guess}">Use ${bad.guess} (${hrsMins(P.parseDur(bad.guess))})</button>` : ''}<button class="btn sm" data-act="sdLongOk">It's right</button></div></div>`;
+      return;
+    }
     const engine = t - f.taxiMin * MIN;
     const sw = ui.sd.sofar === 'manual' ? manualSwitches(t, ui.sd.tank) : { list: plannedSwitchesBefore(f, engine, ui.sd.tank, now()) };
     if (sw.error) { box.innerHTML = `<div class="issue warn">${ICON.warn}<div>${esc(sw.error)}</div></div>`; return; }
@@ -1234,6 +1253,7 @@ function saveSheet(kind) {
   if (ui.sd.tmode) state.settings.timeMode = ui.sd.tmode;
   if (kind === 'start') {
     const takeoff = t;
+    if (startLooksWrong(f, takeoff)) { renderSheetPreview(); return toast('Check the flight timer: it is hours:minutes'); }
     const sw = ui.sd.sofar === 'manual' ? manualSwitches(takeoff, ui.sd.tank) : null;
     if (sw && sw.error) return toast(sw.error);
     f.takeoff = takeoff; f.engineStart = takeoff - f.taxiMin * MIN; f.startTank = ui.sd.tank; f.status = 'active';
@@ -1371,6 +1391,7 @@ function viewFlightDetail(f) {
     <div class="mut small">${f.planHistory?.length || 0} plan version${f.planHistory?.length === 1 ? '' : 's'} saved. Plan edits never count as actual events.</div>
     <div class="row"><button class="btn grow" data-act="exportCsv" data-id="${f.id}">Export CSV</button>${f.id === state.activeFlightId ? '' : `<button class="btn danger grow" data-act="deleteFlight" data-id="${f.id}">Delete</button>`}</div>
     ${f.id !== state.activeFlightId && !f.engineStart ? `<button class="btn outline" data-act="reopen" data-id="${f.id}">Make this the current flight</button>` : ''}
+    ${f.engineStart && f.status !== 'closed' ? `<button class="btn" data-act="resetStart" data-id="${f.id}">Undo start (back to planned)</button>` : ''}
     ${f.id !== state.activeFlightId && f.engineStart && f.status === 'closed' ? `<button class="btn outline" data-act="reactivate" data-id="${f.id}">Reactivate flight</button>
       <div class="mut small">Reactivating removes the shutdown and resumes the flight as if you never shut down: fuel burns on your recorded tanks right up to now. To only fix a time, tap the entry above instead.</div>` : ''}
   </div>`;
@@ -1643,6 +1664,25 @@ const actions = {
   liveTime() { ui.viewTime = null; render(); },
   alertSwitch() { const a = ui.alert; ui.alert = null; ui.viewTime = null; renderAlert(); go('fly'); openSheet('switch', { tank: a?.tank }); },
   alertDismiss() { ui.alert = null; renderAlert(); },
+  sdUseGuess(el) { ui.sd.at = el.dataset.v; ui.sd.atStamp = now(); const i = $('#sd-at'); if (i) i.value = ui.sd.at; renderSheetPreview(); },
+  sdLongOk() { ui.sd.longOk = true; renderSheetPreview(); },
+  resetStart(el) {
+    const f = state.flights[el.dataset.id || state.activeFlightId];
+    ask('Undo the start of this flight? Takeoff, switches, climbs, fuel checks and ETE updates are removed and it goes back to planned.', 'Undo start', () => {
+      f.events = [];
+      f.engineStart = null; f.takeoff = null; f.startTank = null; f.shutdown = null; f.finalUsed = null;
+      f.freezeAt = null; f.snoozeUntil = null; f.divert = null; f.autoEnded = false; f.autoSaved = false;
+      f.status = 'draft';
+      if (f.alt && f.alt.onBeforeDivert !== undefined) { f.alt.on = f.alt.onBeforeDivert; delete f.alt.onBeforeDivert; }
+      savePlanHistory(f, 'undo start');
+      f.plan = generateFor(f, { startMin: 0, endMin: f.blockMin, segs: f.segs, levels: f.startLevels, currentTank: null });
+      f.plan.source = 'generated';
+      state.activeFlightId = f.id;
+      ui.viewTime = null; ui.alert = null;
+      persist(); go('fly');
+      toast('Back to planned. Tap Start flight when you are ready.');
+    });
+  },
   clockMode(el) { state.settings.clockMode = el.dataset.v; persist(); render(); toast(el.dataset.v === 'zulu' ? 'Clock times now in Zulu' : 'Clock times now in each flight\'s local zone'); },
   sdAtMs(el) { ui.sd.at = sheetFieldValue(+el.dataset.ms); const i = $('#sd-at'); if (i) i.value = ui.sd.at; renderSheetPreview(); },
   alertShutdown() { ui.alert = null; renderAlert(); go('fly'); openSheet('shutdown'); },
@@ -1775,7 +1815,7 @@ function onField(ev, committed) {
   }
   if (el.dataset.sd !== undefined) {
     ui.sd[el.dataset.sd] = el.type === 'checkbox' ? el.checked : el.value;
-    if (el.dataset.sd === 'at') ui.sd.atStamp = now();
+    if (el.dataset.sd === 'at') { ui.sd.atStamp = now(); ui.sd.longOk = false; }
     if (el.dataset.sd === 'divert') $('#divIdent')?.classList.toggle('hidden', !el.checked);
     renderSheetPreview();
     return;
