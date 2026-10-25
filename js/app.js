@@ -4,7 +4,7 @@ import * as S from './store.js';
 import { loadGuide } from './guide.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v33'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v34'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -154,6 +154,8 @@ const timeMode = () => state.settings.timeMode || 'timer';
 const fmtTimerS = (min) => (!isFinite(min) ? '—' : min < -0.5 ? 'taxi' : '+' + durS(min));
 // Countdown to a moment: "in 0:52:10", or "0:03:12 late".
 const countTxt = (at) => { const d = (at - now()) / MIN; return d >= 0 ? `in ${durS(d)}` : `${durS(-d)} late`; };
+// Same countdown measured from a viewed moment on the Fly page, so it can't be read as real time.
+const countFromTxt = (at, from, label) => { const d = (at - from) / MIN; return d >= 0 ? `${durS(d)} after ${label}` : `${durS(-d)} late at ${label}`; };
 
 function requiredLanding(f, atMs) {
   const cfg = f.cfg;
@@ -916,9 +918,9 @@ function renderFlyLive() {
     if (due) {
       const mins = (due.at - T) / MIN;
       next = `<div class="card">
-        <div class="row between"><span class="mut small">${due.overdue ? 'Plan says switch now' : 'Next planned switch'}</span><span class="mono small mut">${(() => { const n = legs.filter((l, j) => j > 0 && l.start > T && l.tank !== legs[j - 1].tank).length + (due.overdue ? 1 : 0); return `${n} switch${n === 1 ? '' : 'es'} left`; })()}</span></div>
+        <div class="row between"><span class="mut small">${ui.viewTime ? `At ${fmtTimer(timerAt(f, T))}: ` : ''}${due.overdue ? (ui.viewTime ? 'plan says switch' : 'Plan says switch now') : (ui.viewTime ? 'next planned switch' : 'Next planned switch')}</span><span class="mono small mut">${(() => { const n = legs.filter((l, j) => j > 0 && l.start > T && l.tank !== legs[j - 1].tank).length + (due.overdue ? 1 : 0); return `${n} switch${n === 1 ? '' : 'es'} left`; })()}</span></div>
         <div class="row between"><span style="font-size:22px;font-weight:600">${esc(est.active)} → ${esc(due.tank)}</span>
-          <span style="text-align:right"><span class="mono" style="font-size:22px;color:${due.overdue ? 'var(--warn)' : 'var(--amber)'}">${fmtTimerS(timerAt(f, due.at))}</span><br><span class="mono" style="font-size:17px;color:${due.overdue ? 'var(--warn)' : 'var(--amber)'}" data-count="${due.at}">${countTxt(due.at)}</span><br><span class="z">${hm(due.at)} · ${zt(due.at)}</span></span></div>
+          <span style="text-align:right"><span class="mono" style="font-size:22px;color:${due.overdue ? 'var(--warn)' : 'var(--amber)'}">${fmtTimerS(timerAt(f, due.at))}</span><br><span class="mono" style="font-size:17px;color:${due.overdue ? 'var(--warn)' : 'var(--amber)'}" ${ui.viewTime ? `data-viewcount>${countFromTxt(due.at, T, fmtTimer(timerAt(f, T)))}` : `data-count="${due.at}">${countTxt(due.at)}`}</span><br><span class="z">${hm(due.at)} · ${zt(due.at)}</span></span></div>
         <div class="row small mut">${ICON.bell}<span>Alert ${cfg.alerts?.preMin ?? 2} min before and at the switch · screen kept awake</span></div>
         <button class="btn primary block" data-act="openSheet" data-sheet="switch">Record switch</button>
       </div>`;
@@ -2643,7 +2645,7 @@ setInterval(() => {
   const f = activeFlight();
   if (!f || !f.engineStart) return;
   const el = $('#elapsed'); if (el) el.textContent = fmtTimerS(timerAt(f, now()));
-  // countdowns are real time (alerts run on real time), even while looking at another moment
+  // live countdowns only; while viewing another moment the switch card counts from that moment instead
   document.querySelectorAll('[data-count]').forEach((n) => { n.textContent = countTxt(+n.dataset.count); });
   if (ui.viewTime) return;
   const ft = $('#flyTime'); if (ft && document.activeElement !== ft) ft.value = flyTimeValue(f);
