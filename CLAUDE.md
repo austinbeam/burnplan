@@ -1,0 +1,119 @@
+# Burnplan
+
+Fuel tank switching planner and in-flight tracker. Built for Austin's Piper PA-32 N12345 (4 tanks: LT 17, LM 25, RM 25, RT 17 usable gal), and usable by anyone. The app is live at https://austinbeam.github.io/burnplan/. Austin mostly uses it on Android, in flight, often one-handed. Keep it fast to tap and readable at a glance.
+
+## Stack and layout
+
+- Vanilla JS ES modules with no build step and no dependencies. It is an offline-first PWA.
+- `index.html`, `app.css`, `manifest.webmanifest`, `sw.js`, `icons/`
+- `js/types.js`: the built-in aircraft types (`BUILTIN_TYPES`), shared by every user.
+- `js/planner.js`: pure logic, no DOM. Covers timeline, plan generation, rule checks, in-flight estimation, phases and fueling math. Unit tested.
+- `js/store.js`: localStorage under the key `burnplan.v1`. Also handles backup import and merge.
+- `js/app.js`: all UI (views, sheets, actions, field handlers, alerts, ticker). It is large; grep for `function viewX` / `function sheetX` / action names.
+- `test/planner.test.mjs` (node --test) and `test/ui/*.py` (Playwright click-throughs).
+
+**User data never leaves the device.** No server, no analytics. Export and import of JSON files is the only way data moves.
+
+## Deploying
+
+Push to `main`. The GitHub Actions workflow (`.github/workflows/pages.yml`) runs the planner tests, stamps `__BUILD__` in app.js with the sha and time, appends the sha to the service worker cache name, and deploys to Pages.
+
+On every user-visible change, bump **both** `APP_VERSION` in `js/app.js` and `VERSION` in `sw.js` (for example v31 → v32). Commit, push, then confirm the run with `gh run list -L1`. Austin expects changes to be deployed when they're done. Don't push with failing tests.
+
+## Testing
+
+- Run `test/ui/run.sh` before every deploy. It runs the planner unit tests and every UI script except the slow `landtest`.
+- Run `test/ui/run.sh --all` to include `landtest`.
+- Run `test/ui/run.sh fueltest donetest` to run just those scripts.
+- The UI scripts serve the repo with `python -m http.server` (each on its own port) and drive Chromium with Playwright. Playwright is preinstalled in Claude sessions; don't reinstall it.
+- Many scripts print what they observed rather than asserting. A script fails on a Python exception or Playwright timeout, or on a non-empty `ERRORS [...]` line (uncaught page errors).
+- When you change behavior on purpose, read the printed output and update the script.
+- Screenshots go to `test/ui/shots/` (gitignored); look at them for layout work.
+- Add a planner test for any planning or estimation change, and a UI script for new flows.
+- Gotcha: the alert bar can cover elements, so use `locator.dispatch_event('click')` instead of `page.click` when that happens.
+- Gotcha: some tests use `page.clock.install` / `run_for` to move time.
+
+## Domain rules Austin has set (don't regress these)
+
+### Planning
+
+- Don't plan any tank below the floor (4 gal by default, a hard rule). "Ever is a strong word": this applies to planning, and the plan is still allowed to be overridden.
+- Burn the sides evenly and keep the imbalance under the limit (15 gal, a warning). Sequence: LM → RM (toggling as needed), then LT/RT. Finish on the right side and land balanced. Make legs as long as possible.
+- The user can edit the plan freely, and broken rules are flagged rather than blocked. Planning changes and actual events are kept separate. Every plan change is versioned (`setPlan(f, plan, reason)` archives the old one).
+- All four tanks are approved for takeoff and landing on this airplane; this is configurable per type.
+- Rules and tanks are configurable per type and per tail (tail overrides). Custom types are possible.
+
+### Timeline
+
+The timeline is taxi → climb → cruise → descent → taxi-in.
+
+- ForeFlight ETE is takeoff to landing.
+- ForeFlight total fuel includes taxi. Cruise is derived from it (total − taxi − climb − descent) unless the user enters a cruise gph. Taxi-in comes on top.
+- Reserve is configurable (default 60 min at the cruise burn). The alternate is optional and off by default.
+
+### In-flight cruise burn
+
+**Never infer cruise burn.** Cruise burn changes only from:
+
+- **Set burn** (from now on, or with a button to cover the whole cruise),
+- a **GI 275 check** with a flow typed in, or
+- a gph typed into **Update ETE**.
+
+A check's fuel used, and ForeFlight's fuel-to-destination on an ETE update, must never be turned into a burn rate. ForeFlight fuel is shown for comparison only.
+
+### GI 275 fuel checks
+
+The engine monitor's "used" figure is treated as correct. The difference goes **to climb first** (the tanks burned during climb since the last check), because climb is the least certain part of the estimate. Only what's left over spreads across the rest of the burn.
+
+### Climb and descent
+
+- The initial climb length comes from setup. A mid-flight climb with no length assumes `burn.stepClimbMin` (5 min).
+- Climbs are almost always on a single tank.
+- Descent can be stepped. Each **Descend** entry has its own gph, with **Level off** between steps (burn goes back to cruise). **Landed** starts taxi-in at the ground rate.
+
+### Tanks marked done
+
+A tank marked "done for this flight" (a `park` event) is left where it is. Rebuilds never use it, but it still counts toward balance and landing fuel.
+
+### Flight timer
+
+- Timer entries and displays are **h:mm:ss**, matching the panel timer. Colons are inserted automatically as the user types.
+- Settings → Flight timer chooses where the timer reads 0: **At takeoff** (default; Austin's GTX 345 starts at takeoff, and taxi is before +0:00) or **At engine start** (a timer started by hand). A flight keeps the mode it started with.
+- An implausible start entry (for example 20:00 typed for 20 minutes) is blocked with a suggested fix.
+
+### Times, alerts and screens
+
+- Times show local time with Zulu in smaller gray text. Each flight has its own time zone.
+- Alerts always run on real time, even when the Fly page is showing another moment. The header timer is always live.
+- Landing: an alert at the expected arrival. After a grace period with no input, levels freeze at the assumed landing (or after taxi-in, if a landing was recorded).
+- The flight can be ended at a past time, and a closed flight can be reactivated.
+- The Fly page plan and the timeline update live every minute. The Plan page has a Whole flight / Remaining toggle with a now-marker based on actual history.
+
+### Fuel tab
+
+- Ground fills: top off (the default), specific amounts, or tips full with mains to tabs (18 gal).
+- Record the fill order and the **cumulative** pump reading after each tank; per-tank gallons are calculated from those. The POH fill order is part of the type config (`fillOrder`).
+- A fueling prefills the next flight's starting fuel.
+- Gauge readings (in flight and at fueling) are for calibration only and never change any calculation.
+
+## Data model, briefly
+
+A flight (`state.flights[id]`) stores:
+
+- Setup inputs: `eteMin`, `totalFuel`, `taxiMin`, climb, descent and taxi-in values, `startLevels`, and `profileInput` (what the user typed).
+- `segs`: the minutes-from-engine-start timeline.
+- `cfg`: a snapshot of the resolved config at creation.
+- `plan` and `planHistory`.
+- `engineStart` and `takeoff` timestamps, `timerFrom`, `tz`, `status` (draft/active/closed), `shutdown`, `freezeAt`.
+- `events[]`.
+
+Event types: `engine`, `takeoff`, `climb` {gph, until, initial}, `level`, `descent` {gph, until?}, `landing`, `switch` {tank, catchup, planned}, `check` {used, gph, setsBurn}, `burn` {gph, scope 'all'?}, `ete` {eteMin, fuelToDest, gph, gphSet, divert, altFuel}, `shutdown`, `reactivate`, `gauge` {readings, note, phase}, `note`, `park` / `unpark` {tank}.
+
+`estimate(flight, cfg, T)` replays the events to get the levels at time T. It never burns a tank below empty, and it stops at shutdown or `freezeAt`. `remainingSegs(flight, T)` builds the rest of the timeline (and returns `landMin`) for rebuilds.
+
+## Working with Austin
+
+- He's a pilot and the primary user, and often reports issues from the cockpit with a screenshot. Fix what he reports, deploy, and reply briefly with what changed.
+- He prefers direct answers.
+- Ask before big redesigns (offer a mock-up), not before small fixes.
+- Commit and push only as part of finishing work he asked for.

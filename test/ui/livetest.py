@@ -1,0 +1,45 @@
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); from common import ROOT, OUT
+import subprocess, time, sys
+from playwright.sync_api import sync_playwright
+srv = subprocess.Popen([sys.executable, '-m', 'http.server', '8778', '--directory', ROOT], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(1); errs=[]; M=60000
+try:
+    with sync_playwright() as p:
+        b = p.chromium.launch(); page = b.new_page(viewport={'width': 412, 'height': 915}, device_scale_factor=2)
+        page.on('pageerror', lambda e: errs.append(str(e)))
+        page.clock.install(time=time.mktime((2026, 10, 23, 13, 0, 0, 0, 0, -1)))
+        page.goto('http://localhost:8778/')
+        page.fill('#nt-tail', 'N12345'); page.click('text=Add aircraft')
+        page.fill('#s-ete', '4:33'); page.locator('#s-ete').dispatch_event('input'); page.fill('#s-fuel', '70.9'); page.locator('#s-fuel').dispatch_event('input')
+        page.click('text=Build plan'); page.click('text=Start flight'); page.locator('#sd-at').fill('0:30'); page.locator('#sd-at').dispatch_event('input'); page.click('[data-act=saveStart]'); page.wait_for_timeout(200)
+        print('live state:', page.locator('.livedot').count(), page.locator('[data-act=liveTime]').count())
+        import re
+        nxt = page.locator('#flyLive .card', has_text='Next planned switch').inner_text()
+        mm = re.search(r'in (\d+):(\d+)', nxt); mins = int(mm.group(1))*60 + int(mm.group(2))
+        page.fill('#flyTime', '3:00:00'); page.locator('#flyTime').dispatch_event('change'); page.wait_for_timeout(200)
+        print('viewing:', page.locator('.backlive').inner_text(), '|', page.locator('.card.viewing .small').inner_text())
+        page.screenshot(path=f'{OUT}/live1.png')
+        # first planned switch is around +0:45 from takeoff -> ~15 min from now; alert should still fire while viewing
+        page.locator('#flyTime').blur()
+        page.clock.run_for(max(0, mins-1)*M)
+        page.fill('#flyTime', '3:00:00'); page.locator('#flyTime').dispatch_event('change'); page.locator('#flyTime').blur()
+        page.clock.run_for(100*1000); page.wait_for_timeout(300)
+        print('alert while viewing (before auto-return):', page.inner_text('#alertbar').split('\n')[0] if page.locator('#alertbar .inner').count() else 'none', '| still viewing:', page.locator('.backlive').count())
+        b.close()
+        b = p.chromium.launch(); page = b.new_page(viewport={'width': 412, 'height': 915}, device_scale_factor=2)
+        page.on('pageerror', lambda e: errs.append(str(e)))
+        page.clock.install(time=time.mktime((2026, 10, 23, 13, 0, 0, 0, 0, -1)))
+        page.goto('http://localhost:8778/')
+        page.fill('#nt-tail', 'N12345'); page.click('text=Add aircraft')
+        page.fill('#s-ete', '4:33'); page.locator('#s-ete').dispatch_event('input'); page.fill('#s-fuel', '70.9'); page.locator('#s-fuel').dispatch_event('input')
+        page.click('text=Build plan'); page.click('text=Start flight'); page.locator('#sd-at').fill('0:30'); page.locator('#sd-at').dispatch_event('input'); page.click('[data-act=saveStart]'); page.wait_for_timeout(200)
+        page.fill('#flyTime', '3:00:00'); page.locator('#flyTime').dispatch_event('change'); page.wait_for_timeout(100)
+        page.locator('#flyTime').blur()
+        page.clock.run_for(3*M); page.wait_for_timeout(300)
+        print('auto-returned:', page.locator('.livedot').count() == 1, page.locator('.backlive').count() == 0)
+        page.fill('#flyTime', '3:00:00'); page.locator('#flyTime').dispatch_event('change'); page.wait_for_timeout(100)
+        page.click('.backlive'); page.wait_for_timeout(100)
+        print('back to live button:', page.locator('.livedot').count() == 1)
+        b.close()
+finally: srv.terminate()
+print('ERRORS', errs)
