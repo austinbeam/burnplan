@@ -3,7 +3,7 @@ import * as P from './planner.js';
 import * as S from './store.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v28'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v29'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -136,7 +136,15 @@ const activeFlight = () => (state.activeFlightId ? state.flights[state.activeFli
 const MS = (f, min) => f.engineStart + min * MIN;
 // The pilot's flight timer starts at takeoff; taxi happens before it.
 const takeoffOf = (f) => (f && (f.takeoff ?? (f.engineStart ? f.engineStart + (f.taxiMin || 0) * MIN : null))) || null;
-const timerAt = (f, ms) => (takeoffOf(f) ? (ms - takeoffOf(f)) / MIN : NaN);
+// Where the flight timer reads 0: at takeoff (an automatic timer such as the GTX 345's) or at engine
+// start (a timer started by hand before taxi). Set in Settings; a flight keeps the mode it started with.
+const timerMode = (f) => (f && f.timerFrom) || (f && f.engineStart ? 'takeoff' : state.settings.timerFrom || 'takeoff');
+const timerOffMin = (f) => (timerMode(f) === 'engine' ? (f.taxiMin || 0) : 0); // taxi minutes on the timer before takeoff
+const timerZero = (f) => (takeoffOf(f) ? (timerMode(f) === 'engine' && f.engineStart ? f.engineStart : takeoffOf(f) - timerOffMin(f) * MIN) : null);
+const timerAt = (f, ms) => (timerZero(f) ? (ms - timerZero(f)) / MIN : NaN);
+const fromTimer = (f, d) => timerZero(f) + d * MIN;
+// Timer reading for a plan minute (minutes from engine start) before the flight has started.
+const planTimer = (f, min) => min - (f.taxiMin || 0) + timerOffMin(f);
 const fmtTimer = (min) => (!isFinite(min) ? '—' : min < -0.5 ? 'taxi' : '+' + dur(Math.max(0, min)));
 const timerZ = (f, ms) => `<span class="mono">${fmtTimerS(timerAt(f, ms))}</span> <span class="z">${hm(ms)} · ${zt(ms)}</span>`;
 const timeMode = () => state.settings.timeMode || 'timer';
@@ -537,7 +545,7 @@ function renderSetupCalc() {
   const tl = c.tl, cfg = c.cfg, b = cfg.burn;
   box.innerHTML = `<div class="stack" style="gap:6px">
     <div class="kv"><span class="mut">Taxi share (${f1(b.ground)} gph, run-up incl.)</span><span class="v">${f1(tl.taxiFuel)}</span></div>
-    <div class="kv"><span class="mut">Climb ${dur(tl.climbMin)} @ ${f1(tl.climbGph)} gph → level at +${dur(tl.climbMin)}</span><span class="v">${f1(tl.climbFuel)}</span></div>
+    <div class="kv"><span class="mut">Climb ${dur(tl.climbMin)} @ ${f1(tl.climbGph)} gph → level at +${dur(tl.climbMin + ((state.settings.timerFrom || 'takeoff') === 'engine' ? (tl.segments[0]?.min || 0) : 0))}</span><span class="v">${f1(tl.climbFuel)}</span></div>
     <div class="kv"><span class="mut">Cruise ${dur(tl.cruiseMin)} @ ${tl.derived ? 'auto' : num(ui.draft.cruiseGph) > 0 ? 'your' : 'aircraft'} rate</span><span class="v">${f1(tl.cruiseGph)} gph · ${f1((tl.cruiseMin / 60) * tl.cruiseGph)}</span></div>
     <div class="kv total"><span>Block ${dur(tl.blockMin)}</span><span class="v">${f1(tl.totalFuel)} gal</span></div>
     <div class="kv"><span class="mut">Aboard ${f1(c.aboard)} · lands with</span><span class="v" style="color:${c.ok ? 'var(--tx)' : 'var(--warn)'}">${f1(c.lands)}</span></div>
@@ -630,7 +638,7 @@ function viewPlan() {
   const shortFuel = shortMin > 0.5 ? P.fuelBetween(p.segs, chk.planEnd, p.endMin) : 0;
   const tm = P.tankMap(cfg);
   const colorOf = (id) => tankColor(cfg, id);
-  const timeLbl = (min) => (f.engineStart ? `${fmtTimer(timerAt(f, MS(f, min)))}<br><span class="z">${hm(MS(f, min))}</span>` : fmtTimer(min - f.taxiMin));
+  const timeLbl = (min) => (f.engineStart ? `${fmtTimer(timerAt(f, MS(f, min)))}<br><span class="z">${hm(MS(f, min))}</span>` : fmtTimer(planTimer(f, min)));
   const whole = active && (state.settings.planView || 'whole') === 'whole';
   const pastRows = whole ? actualLegs(f, now(), false) : [];
   // Plan rows still ahead (or in progress) — anything already flown is shown from actual history instead.
@@ -680,9 +688,10 @@ function viewPlan() {
           <div class="bar phasebar" aria-label="Flight phases">${flownPh.map((x) => past(x.min, `var(--ph-${x.phase})`)).join('')}${planPh.map((x) => past(x.min, `var(--ph-${x.phase})`)).join('')}</div>
           <div class="bar" aria-label="Tank use">${flownTanks.map((r) => past(r.min, colorOf(r.tank))).join('')}${planTanks.map((r) => past(r.min, colorOf(r.tank))).join('')}${shortRest > 0.5 ? `<div style="flex:${shortRest};background:repeating-linear-gradient(45deg,var(--warn) 0 4px,var(--warnbg) 4px 8px)"></div>` : ''}</div>
           ${marker}</div>
-          <div class="axis mono"><span>${whole || !active ? 'taxi' : 'now ' + fmtTimer(timerAt(f, T))}</span>${flownMin > 0.5 ? `<span class="nowlbl" style="left:${Math.min(84, Math.max(16, nowPct))}%">now ${fmtTimer(timerAt(f, now()))}</span>` : ''}<span>${fmtTimer((active ? timerAt(f, MS(f, p.endMin)) : p.endMin - f.taxiMin))}</span></div>`;
+          <div class="axis mono"><span>${whole || !active ? (timerOffMin(f) ? '+0:00' : 'taxi') : 'now ' + fmtTimer(timerAt(f, T))}</span>${flownMin > 0.5 ? `<span class="nowlbl" style="left:${Math.min(84, Math.max(16, nowPct))}%">now ${fmtTimer(timerAt(f, now()))}</span>` : ''}<span>${fmtTimer((active ? timerAt(f, MS(f, p.endMin)) : planTimer(f, p.endMin)))}</span></div>`;
       })()}
       <div class="legend"><span><span class="sw" style="background:var(--ph-taxi)"></span>taxi</span><span><span class="sw" style="background:var(--ph-climb)"></span>climb</span><span><span class="sw" style="background:var(--ph-cruise)"></span>cruise</span><span class="dim">|</span>${cfg.tanks.map((t) => `<span><span class="sw" style="background:${colorOf(t.id)}"></span>${esc(t.id)}</span>`).join('')}${shortMin > 0.5 ? '<span>hatched = short</span>' : ''}</div>
+      <div class="mut small" style="margin-top:4px">${timerOffMin(f) ? `Times are your flight timer, started at engine start: taxi is +0:00 to +${dur(f.taxiMin || 0)}, takeoff at +${dur(f.taxiMin || 0)}.` : `Times are your flight timer, which starts at takeoff (+0:00). Taxi comes before it and isn't on the timer.`} <a href="#aircraft">Change</a></div>
     </div>
     <div class="legs">
       <div class="legrow head"><span>#</span><span>Tank</span><span>Start</span><span>Min</span><span>Gal</span><span>After</span><span class="right">L/R Δ</span><span></span></div>
@@ -701,7 +710,7 @@ function viewPlan() {
           <span class="${r.flags.includes('floor') || r.flags.includes('empty') ? 'flag' : ''}">${f1(r.after)}</span>
           <span class="right ${r.flags.includes('imbalance') ? 'flag' : Math.abs(r.imb) >= cfg.rules.imbalance.gal - 2 ? 'flag w' : 'mut'}">${f1(Math.abs(r.imb))}</span>
           <button class="iconbtn" style="width:28px;height:36px" aria-label="Delete leg ${i + 1}" data-act="delLeg" data-i="${i}">${ICON.del}</button>
-          ${phaseLines(P.phasesBetween(p.segs, r.startMin, r.startMin + r.min), f.engineStart ? fmtTimer(timerAt(f, MS(f, r.startMin + r.min))) : fmtTimer(r.startMin + r.min - f.taxiMin))}
+          ${phaseLines(P.phasesBetween(p.segs, r.startMin, r.startMin + r.min), f.engineStart ? fmtTimer(timerAt(f, MS(f, r.startMin + r.min))) : fmtTimer(planTimer(f, r.startMin + r.min)))}
         </div>`;
       }).join('')}
       ${shortMin > 0.5 ? `<div class="legrow short"><span>!</span><span style="font-family:var(--sans);font-weight:600">short</span><span>${timeLbl(chk.planEnd)}</span><span>${Math.round(shortMin)}</span><span>${f1(shortFuel)}</span><span>—</span><span class="right">—</span><span></span></div>` : ''}
@@ -840,7 +849,7 @@ function renderFlyLive() {
   const side = (arr) => arr.reduce((a, t) => a + est.levels[t.id], 0);
   const SL = side(L), SR = side(R), imb = SL - SR;
   const parked = P.parkedTanks(f, T);
-  const el = $('#elapsed'); if (el && f.engineStart) el.textContent = fmtTimerS(timerAt(f, T));
+  const el = $('#elapsed'); if (el && f.engineStart) el.textContent = fmtTimerS(timerAt(f, now())); // header is always the live timer
   const z = $('#flyZ'); if (z) z.textContent = flyMode(f) === 'timer' ? `${hm(T)} · ${zt(T)}` : zt(T);
 
   let landedCard = '';
@@ -1038,7 +1047,7 @@ function manualSwitches(takeoff, tank0) {
   for (const [i, r] of (ui.sd.rows || []).entries()) {
     const d = P.parseDur(r.at);
     if (!isFinite(d)) return { error: `Switch ${i + 1}: enter the timer reading` };
-    const at = takeoff + d * MIN;
+    const at = takeoff - timerOffMin(sheetFlight()) * MIN + d * MIN;
     if (at > now() + MIN) return { error: `Switch ${i + 1} is after the timer now` };
     if (at <= prevAt) return { error: `Switch ${i + 1} must be after switch ${i}` };
     if (r.tank === prev) return { error: `Switch ${i + 1} is to the tank already on (${r.tank})` };
@@ -1268,7 +1277,7 @@ function sheetTime() {
   if (takeoffField()) {
     if (tm === 'timer') {
       const d = P.parseDur(ui.sd.at);
-      return isFinite(d) ? (ui.sd.atStamp || now()) - d * MIN : NaN;
+      return isFinite(d) ? (ui.sd.atStamp || now()) - d * MIN + timerOffMin(f) * MIN : NaN;
     }
     const t = parseClockZ(ui.sd.at, now());
     return isFinite(t) && t <= now() + MIN ? t : NaN;
@@ -1276,7 +1285,7 @@ function sheetTime() {
   let t;
   if (tm === 'timer' && takeoffOf(f)) {
     const d = P.parseDur(ui.sd.at);
-    t = isFinite(d) ? takeoffOf(f) + d * MIN : NaN;
+    t = isFinite(d) ? fromTimer(f, d) : NaN;
   } else t = parseClockZ(ui.sd.at, now());
   if (!isFinite(t)) return NaN;
   if (f.engineStart && t < f.engineStart) return NaN;
@@ -1286,7 +1295,7 @@ function sheetTime() {
 
 function sheetFieldValue(ms) {
   const f = sheetFlight();
-  if (takeoffField()) return ui.sd.tmode === 'timer' ? durS((now() - ms) / MIN) : hm(ms);
+  if (takeoffField()) return ui.sd.tmode === 'timer' ? durS((now() - ms) / MIN + timerOffMin(f)) : hm(ms);
   return ui.sd.tmode === 'timer' ? durS(timerAt(f, ms)) : hm(ms);
 }
 
@@ -1315,10 +1324,10 @@ function renderSheetPreview() {
     const engine = t - f.taxiMin * MIN;
     const sw = ui.sd.sofar === 'manual' ? manualSwitches(t, ui.sd.tank) : { list: plannedSwitchesBefore(f, engine, ui.sd.tank, now()) };
     if (sw.error) { box.innerHTML = `<div class="issue warn">${ICON.warn}<div>${esc(sw.error)}</div></div>`; return; }
-    const lines = sw.list.map((x) => `<div class="kv"><span class="mut">Switch → ${esc(x.tank)}</span><span class="v">+${dur((x.at - t) / MIN)} · ${hm(x.at)}</span></div>`).join('');
+    const lines = sw.list.map((x) => `<div class="kv"><span class="mut">Switch → ${esc(x.tank)}</span><span class="v">+${dur((x.at - t) / MIN + timerOffMin(f))} · ${hm(x.at)}</span></div>`).join('');
     const cur = sw.list.length ? sw.list[sw.list.length - 1].tank : ui.sd.tank;
     const cl = P.parseDur(ui.sd.climb);
-    const climbLine = isFinite(cl) ? `<div class="kv"><span class="mut">Climb ${dur(cl)} @ ${f1(f.climbGph || f.cfg.burn.climbGph)}</span><span class="v">level ${t + cl * MIN > now() ? 'expected ' : ''}+${dur(cl)}</span></div>` : '';
+    const climbLine = isFinite(cl) ? `<div class="kv"><span class="mut">Climb ${dur(cl)} @ ${f1(f.climbGph || f.cfg.burn.climbGph)}</span><span class="v">level ${t + cl * MIN > now() ? 'expected ' : ''}+${dur(cl + timerOffMin(f))}</span></div>` : '';
     box.innerHTML = `<div class="kv"><span class="mut">Taxi ${f.taxiMin} min on ${esc(ui.sd.tank)} from</span><span class="v">${hm(engine)}</span></div>${climbLine}${lines}
       <div class="kv"><span class="mut">On now</span><span class="v">${esc(cur)}</span></div>`;
     return;
@@ -1335,7 +1344,8 @@ function renderSheetPreview() {
     const calc = calcLevels(f, t);
     const rows = f.cfg.tanks.map((x) => {
       const ind = parseGauge(ui.sd.vals?.[x.id], x.capacity);
-      if (ind == null) return '';
+      // every tank always has a row, so the sheet doesn't jump as readings are typed
+      if (ind == null) return `<div class="kv"><span class="mut">${esc(x.id)} indicated · calculated</span><span class="v"><span class="mut">— · ${f1(calc[x.id])}</span></span></div>`;
       if (!isFinite(ind)) return `<div class="kv"><span class="mut">${esc(x.id)}</span><span class="v" style="color:var(--warn)">can't read that</span></div>`;
       const d = ind - calc[x.id];
       return `<div class="kv"><span class="mut">${esc(x.id)} indicated · calculated</span><span class="v">${f1(ind)} · ${f1(calc[x.id])} <span style="color:${Math.abs(d) >= 2 ? 'var(--amber)' : 'var(--mut)'}">(${d >= 0 ? '+' : ''}${f1(d)})</span></span></div>`;
@@ -1417,6 +1427,7 @@ function saveSheet(kind) {
     if (startLooksWrong(f, takeoff)) { renderSheetPreview(); return toast('Check the flight timer: it is h:mm:ss'); }
     const sw = ui.sd.sofar === 'manual' ? manualSwitches(takeoff, ui.sd.tank) : null;
     if (sw && sw.error) return toast(sw.error);
+    f.timerFrom = state.settings.timerFrom || 'takeoff';
     f.takeoff = takeoff; f.engineStart = takeoff - f.taxiMin * MIN; f.startTank = ui.sd.tank; f.status = 'active';
     f.tz = f.tz || phoneTZ();
     ui.viewTime = null;
@@ -1881,7 +1892,7 @@ function flightCsv(f) {
   const versions = [...(f.planHistory || []).map((h) => ({ legs: h.legs, startMin: h.startMin, at: h.createdAt, why: h.created || '' })), { legs: f.plan.legs, startMin: f.plan.startMin, at: f.plan.at, why: f.plan.reason || 'current' }];
   versions.forEach((v, n) => {
     let t = v.startMin;
-    for (const l of v.legs) { rows.push([`plan_v${n + 1}`, 'leg', l.tank, f.engineStart ? fmtTimer(timerAt(f, MS(f, t))) : fmtTimer(t - f.taxiMin), '', v.at ? new Date(v.at).toISOString() : '', '', Math.round(l.min), '', v.why]); t += l.min; }
+    for (const l of v.legs) { rows.push([`plan_v${n + 1}`, 'leg', l.tank, f.engineStart ? fmtTimer(timerAt(f, MS(f, t))) : fmtTimer(planTimer(f, t)), '', v.at ? new Date(v.at).toISOString() : '', '', Math.round(l.min), '', v.why]); t += l.min; }
   });
   const s = flightSummary(f);
   rows.push(['summary', 'time_zone', '', '', '', '', '', f.tz || phoneTZ()]);
@@ -1932,6 +1943,10 @@ function viewAircraft() {
         <div class="seg" role="group" aria-label="Clock times"><button class="${clockMode() === 'local' ? 'on' : ''}" aria-pressed="${clockMode() === 'local'}" data-act="clockMode" data-v="local">Local (flight's zone)</button><button class="${clockMode() === 'zulu' ? 'on' : ''}" aria-pressed="${clockMode() === 'zulu'}" data-act="clockMode" data-v="zulu">Zulu</button></div></div>
       <div class="mut small">Local shows each flight in the zone it departed from, with Zulu alongside. Zulu shows and reads all clock times in UTC.</div>
     </div>
+    <div class="card"><h2>Flight timer</h2>
+      <div class="mut small">When does the timer you read in flight start? Burnplan shows times and takes timer readings on the same clock.</div>
+      <div class="seg" style="grid-template-columns:repeat(2,minmax(0,1fr));margin-top:8px" role="group" aria-label="Flight timer starts">${[['takeoff', 'At takeoff', 'automatic, e.g. GTX 345'], ['engine', 'At engine start', 'started by hand before taxi']].map(([k, l, d]) => `<button class="${(state.settings.timerFrom || 'takeoff') === k ? 'on' : ''}" aria-pressed="${(state.settings.timerFrom || 'takeoff') === k}" data-act="setTimerFrom" data-v="${k}">${l}<br><span class="small mut">${d}</span></button>`).join('')}</div>
+      <div class="mut small" style="margin-top:6px">${(state.settings.timerFrom || 'takeoff') === 'engine' ? 'Taxi counts on the timer: +0:00 is engine start and takeoff is at +taxi minutes.' : 'Taxi happens before +0:00 and is not on the timer.'} Applies to flights you start from now on; a flight already started keeps the setting it started with.</div></div>
     <div class="card"><h2>Backup</h2><div class="mut small">Everything is stored only on this phone. Export a backup to keep a copy or move to a new phone; import a backup, flight, tail or type file.</div>
       <div class="row"><button class="btn grow" data-act="exportAll">Export backup</button><label class="btn grow" for="importFile">Import</label><input type="file" id="importFile" accept="application/json,.json" class="hidden"></div></div>
     <div class="buildinfo mono">Burnplan ${APP_VERSION} · build ${APP_BUILD.startsWith('__') ? 'dev' : esc(APP_BUILD)}</div>
@@ -2054,6 +2069,7 @@ const actions = {
       persist(); render();
     });
   },
+  setTimerFrom(el) { state.settings.timerFrom = el.dataset.v; persist(); render(); toast(el.dataset.v === 'engine' ? 'Timer starts at engine start' : 'Timer starts at takeoff'); },
   toggleDone(el) {
     const f = activeFlight();
     if (!f || f.status !== 'active') return toast('Start the flight first');
@@ -2400,7 +2416,7 @@ function onField(ev, committed) {
     const fl = state.flights[el.dataset.fid];
     const d = P.parseDur(el.value);
     if (!isFinite(d)) return toast('Enter the flight timer as h:mm:ss');
-    ui.replayAt = takeoffOf(fl) + d * MIN; ui.replayFid = fl.id; ui.openVersions = !!$('details.card[open] .pv');
+    ui.replayAt = fromTimer(fl, d); ui.replayFid = fl.id; ui.openVersions = !!$('details.card[open] .pv');
     render(); return;
   }
   if (el.dataset.ftz) { const fl = state.flights[el.dataset.ftz]; fl.tz = el.value; persist(); render(); toast(`Clock times for this flight now in ${zoneAbbr(el.value, takeoffOf(fl) || now())}`); return; }
@@ -2409,7 +2425,7 @@ function onField(ev, committed) {
   if (el.id === 'flyTime') {
     const f = activeFlight();
     let t;
-    if (flyMode(f) === 'timer') { const d = P.parseDur(el.value); t = isFinite(d) ? takeoffOf(f) + d * MIN : NaN; }
+    if (flyMode(f) === 'timer') { const d = P.parseDur(el.value); t = isFinite(d) ? fromTimer(f, d) : NaN; }
     else t = parseClockZ(el.value, now());
     if (!isFinite(t)) { toast(flyMode(f) === 'timer' ? 'Enter the flight timer as h:mm' : 'Enter the time as HH:MM'); return; }
     ui.viewTime = Math.abs(t - now()) < MIN ? null : t;
@@ -2496,12 +2512,14 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- 1 s ticker: flight timer, countdowns ----------
 setInterval(() => {
-  if (ui.route !== 'fly' || ui.viewTime) return;
+  if (ui.route !== 'fly') return;
   const f = activeFlight();
   if (!f || !f.engineStart) return;
   const el = $('#elapsed'); if (el) el.textContent = fmtTimerS(timerAt(f, now()));
-  const ft = $('#flyTime'); if (ft && document.activeElement !== ft) ft.value = flyTimeValue(f);
+  // countdowns are real time (alerts run on real time), even while looking at another moment
   document.querySelectorAll('[data-count]').forEach((n) => { n.textContent = countTxt(+n.dataset.count); });
+  if (ui.viewTime) return;
+  const ft = $('#flyTime'); if (ft && document.activeElement !== ft) ft.value = flyTimeValue(f);
 }, 1000);
 
 // ---------- tick ----------

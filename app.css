@@ -180,7 +180,7 @@ button.gauge:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px
 .evrow.tap { cursor: pointer; }
 .evrow.tap:active { background: var(--s2); }
 .evrow.tap:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
-.barwrap { position: relative; display: flex; flex-direction: column; gap: 4px; }
+.barwrap { position: relative; display: flex; flex-direction: column; gap: 4px; margin-top: 14px; }
 .barwrap .phasebar { margin-bottom: 0; }
 .nowmark { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--amber); border-radius: 1px; }
 .axis { position: relative; display: flex; justify-content: space-between; font-size: 11px; color: var(--mut); height: 16px; }
