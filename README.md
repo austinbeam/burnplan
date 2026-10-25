@@ -47,7 +47,7 @@ The type gives the tanks, burn profile and rules. You can change any of them for
 
 The plan shows each leg: which tank, when it starts, how long it runs, fuel burned, what's left in the tank, and the left/right imbalance. The colored bar shows the whole flight at a glance.
 
-You can edit any leg (change the tank or the minutes). Broken rules are flagged in orange or red, but never blocked; you're the pilot. **Regenerate** goes back to a fresh plan.
+You can edit any leg: change the tank, the minutes, or the gallons the tank should have left after it (**After**), and the other is calculated. Tap a leg's number to keep the plan through that leg and rebuild everything after it, for example to lock in the next switch and rebalance the rest. Broken rules are flagged in orange or red, but never blocked; you're the pilot. **Regenerate** goes back to a fresh plan.
 
 ### How the plan is built
 

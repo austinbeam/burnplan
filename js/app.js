@@ -4,7 +4,7 @@ import * as S from './store.js';
 import { loadGuide } from './guide.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v37'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v38'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -196,8 +196,8 @@ function setPlan(f, plan, reason) {
 }
 const legTxt = (l) => `${l.tank} ${Math.round(l.min)}m`;
 
-function generateFor(f, { startMin, endMin, segs, levels, currentTank }) {
-  const g = P.generatePlan({ cfg: f.cfg, segs, startMin, endMin, levels, currentTank, requiredLanding: requiredLanding(f), parked: P.parkedTanks(f) });
+function generateFor(f, { startMin, endMin, segs, levels, currentTank, switchFrom }) {
+  const g = P.generatePlan({ cfg: f.cfg, segs, startMin, endMin, levels, currentTank, switchFrom, requiredLanding: requiredLanding(f), parked: P.parkedTanks(f) });
   return { startMin, endMin, segs, levels: { ...levels }, legs: g.legs.map((l) => ({ tank: l.tank, min: l.min })), source: currentTank ? 'rebuilt' : 'generated', at: now() };
 }
 
@@ -205,6 +205,18 @@ function rebuildFrom(f, atMs, reason) {
   const est = P.estimate(f, f.cfg, atMs);
   const rs = P.remainingSegs(f, atMs);
   setPlan(f, generateFor(f, { startMin: rs.startMin, endMin: rs.endMin, segs: rs.segs, levels: est.levels, currentTank: est.active }), reason ? `Rebuilt (${reason})` : 'Rebuilt');
+}
+
+// Keep plan legs 0..i exactly as they are and regenerate everything after them, starting with a
+// switch off leg i's tank.
+function rebuildAfterLeg(f, i) {
+  const p = f.plan;
+  const row = planCheck(f).rows[i];
+  if (!row) return;
+  const at = row.startMin + row.min;
+  const kept = p.legs.slice(0, i + 1).map((l) => ({ ...l }));
+  const rest = at < p.endMin - 0.5 ? generateFor(f, { startMin: at, endMin: p.endMin, segs: p.segs, levels: row.levels, switchFrom: row.tank }).legs : [];
+  setPlan(f, { ...p, legs: [...kept, ...rest], source: 'rebuilt' }, `Rebuilt after leg ${i + 1} (kept ${kept.map(legTxt).join(', ')})`);
 }
 
 function flightTitle(f) {
@@ -748,12 +760,12 @@ function viewPlan() {
         const bad = r.flags.filter((x) => ['empty', 'floor', 'imbalance', 'sequence'].includes(x));
         const isNow = active && nowMin >= r.startMin && nowMin < r.startMin + r.min;
         return `<div class="legrow ${isNow ? 'now' : ''}">
-          <span class="${bad.length ? 'flag' : 'mut'}">${bad.length ? '!' : i + 1}</span>
+          <button class="legno ${bad.length ? 'flag' : ''}" aria-label="Keep through leg ${i + 1} and rebuild after it" data-act="keepLeg" data-i="${i}">${bad.length ? '!' : i + 1}</button>
           <select aria-label="Leg ${i + 1} tank" data-leg-tank="${i}" style="color:${colorOf(r.tank)};font-weight:600">${P.selectable(cfg).map((t) => `<option ${t.id === r.tank ? 'selected' : ''}>${esc(t.id)}</option>`).join('')}</select>
           <span>${timeLbl(r.startMin)}</span>
           <input aria-label="Leg ${i + 1} minutes" data-leg-min="${i}" value="${Math.round(r.min)}" inputmode="numeric">
           <span>${f1(r.fuel)}</span>
-          <span class="${r.flags.includes('floor') || r.flags.includes('empty') ? 'flag' : ''}">${f1(r.after)}</span>
+          <input aria-label="Leg ${i + 1} tank level after (gal)" data-leg-after="${i}" value="${f1(r.after)}" inputmode="decimal" class="${r.flags.includes('floor') || r.flags.includes('empty') ? 'flag' : ''}">
           <span class="right ${r.flags.includes('imbalance') ? 'flag' : Math.abs(r.imb) >= cfg.rules.imbalance.gal - 2 ? 'flag w' : 'mut'}">${f1(Math.abs(r.imb))}</span>
           <button class="iconbtn" style="width:28px;height:36px" aria-label="Delete leg ${i + 1}" data-act="delLeg" data-i="${i}">${ICON.del}</button>
           ${phaseLines(P.phasesBetween(p.segs, r.startMin, r.startMin + r.min), f.engineStart ? fmtTimer(timerAt(f, MS(f, r.startMin + r.min))) : fmtTimer(planTimer(f, r.startMin + r.min)))}
@@ -761,10 +773,10 @@ function viewPlan() {
       }).join('')}
       ${shortMin > 0.5 ? `<div class="legrow short"><span>!</span><span style="font-family:var(--sans);font-weight:600">short</span><span>${timeLbl(chk.planEnd)}</span><span>${Math.round(shortMin)}</span><span>${f1(shortFuel)}</span><span>—</span><span class="right">—</span><span></span></div>` : ''}
     </div>
-    ${active ? (() => { const pk = P.parkedTanks(f); return `<div class="card" style="padding:10px 12px"><div class="row between"><span class="lbl">Tanks to use for the rest of the flight</span></div>
+    ${active ? (() => { const pk = P.parkedTanks(f); return `<div class="card" style="padding:10px 12px"><div class="row between"><span class="lbl">Tap a tank to mark it done for this flight</span></div>
       <div class="row wrap" style="gap:6px;margin-top:6px">${f.cfg.tanks.map((t) => `<button class="btn sm ${pk.includes(t.id) ? 'outline' : ''}" data-act="toggleDone" data-tank="${esc(t.id)}" aria-pressed="${!pk.includes(t.id)}" style="${pk.includes(t.id) ? 'text-decoration:line-through;opacity:.7' : `color:${tankColor(f.cfg, t.id)}`}">${esc(t.id)}${pk.includes(t.id) ? ' · done' : ''}</button>`).join('')}</div>
-      <div class="mut small" style="margin-top:6px">${pk.length ? `${esc(pk.join(', '))} ${pk.length > 1 ? 'are' : 'is'} left where ${pk.length > 1 ? 'they are' : 'it is'}: rebuilds won't use ${pk.length > 1 ? 'them' : 'it'}, but ${pk.length > 1 ? 'they still count' : 'it still counts'} toward balance and landing fuel. Tap to use again.` : 'Tap a tank to mark it done for this flight and rebuild without it.'}</div></div>`; })() : ''}
-    <div class="row wrap"><button class="btn sm" data-act="addLeg">+ Add leg</button><span class="mut small grow">Change a tank or minutes to edit; rules are re-checked and broken ones are flagged.</span></div>
+      ${pk.length ? `<div class="mut small" style="margin-top:6px">${esc(pk.join(', '))} done: rebuilds skip ${pk.length > 1 ? 'them' : 'it'}, but ${pk.length > 1 ? 'they count' : 'it counts'} for balance and landing fuel. Tap again to use.</div>` : ''}</div></div>`; })() : ''}
+    <div class="row wrap"><button class="btn sm" data-act="addLeg">+ Add leg</button><span class="mut small grow">Change a tank, minutes or the gallons left after a leg to edit; rules are re-checked and broken ones are flagged. Tap a leg's number to keep the plan through it and rebuild after it.</span></div>
     <div class="row">
       <button class="btn grow" data-act="regen">${active ? 'Rebuild from now' : 'Regenerate'}</button>
       ${active ? `<a class="btn primary grow" href="#fly">Fly</a>` : `<button class="btn primary grow" data-act="openSheet" data-sheet="start">Start flight</button>`}
@@ -805,6 +817,16 @@ function editLeg(i, field, value) {
   const old = f.plan.legs[i];
   let what;
   if (field === 'tank') { if (value === old.tank) return; legs[i].tank = value; what = `leg ${i + 1} tank ${old.tank} → ${value}`; }
+  else if (field === 'after') {
+    const chk = planCheck(f), row = chk.rows[i];
+    const before = P.feedLevel(f.cfg, i > 0 ? chk.rows[i - 1].levels : f.plan.levels, old.tank);
+    const target = parseFloat(value);
+    if (!isFinite(target) || target < 0 || target >= before - 0.05) { toast(`Enter a level below ${f1(before)} gal`); return render(); }
+    if (Math.abs(target - row.after) < 0.05) return;
+    const m = P.timeForFuel(f.plan.segs, row.startMin, before - target);
+    if (!isFinite(m) || m <= 0) return render();
+    legs[i].min = m; what = `leg ${i + 1} ${old.tank} to ${f1(target)} gal (${Math.round(old.min)} → ${Math.round(m)} min)`;
+  }
   else { const m = P.parseDur(value); if (!isFinite(m) || m <= 0) return render(); if (Math.round(m) === Math.round(old.min)) return; legs[i].min = m; what = `leg ${i + 1} ${old.tank} ${Math.round(old.min)} → ${Math.round(m)} min`; }
   setPlan(f, { ...f.plan, legs, source: 'edited' }, `Edited ${what}`);
   persist(); render();
@@ -1024,14 +1046,14 @@ function openSheet(name, data = {}) {
   renderSheet();
 }
 function closeSheet() { ui.sheet = null; ui.sd = {}; renderSheet(); if (ui.reloadPending) setTimeout(ui.reloadPending, 300); }
-function ask(msg, yesLabel, fn) { ui.sheet = 'confirm'; ui.sd = { msg, yesLabel, fn }; renderSheet(); }
+function ask(msg, yesLabel, fn, cls = 'danger') { ui.sheet = 'confirm'; ui.sd = { msg, yesLabel, fn, cls }; renderSheet(); }
 
 function renderSheet() {
   const host = $('#sheet');
   if (!ui.sheet) { host.innerHTML = ''; return; }
   if (ui.sheet === 'confirm') {
     host.innerHTML = `<div class="scrim" data-act="scrim"><div class="sheet" role="alertdialog" aria-modal="true" aria-label="Confirm">
-      <h2>${esc(ui.sd.msg)}</h2><div class="row"><button class="btn grow" data-act="closeSheet">Cancel</button><button class="btn danger grow" data-act="confirmYes">${esc(ui.sd.yesLabel)}</button></div></div></div>`;
+      <h2>${esc(ui.sd.msg)}</h2><div class="row"><button class="btn grow" data-act="closeSheet">Cancel</button><button class="btn ${ui.sd.cls || 'danger'} grow" data-act="confirmYes">${esc(ui.sd.yesLabel)}</button></div></div></div>`;
     return;
   }
   const f = sheetFlight();
@@ -2305,6 +2327,14 @@ const actions = {
     else setPlan(f, { ...generateFor(f, { startMin: 0, endMin: f.blockMin, segs: f.segs, levels: f.startLevels }), source: 'generated' }, 'Regenerated');
     persist(); render();
   },
+  keepLeg(el) {
+    const f = activeFlight();
+    const i = +el.dataset.i;
+    const row = planCheck(f).rows[i];
+    if (!row) return;
+    const end = f.engineStart ? fmtTimer(timerAt(f, MS(f, row.startMin + row.min))) : fmtTimer(planTimer(f, row.startMin + row.min));
+    ask(`Keep leg${i ? `s 1–${i + 1}` : ' 1'} as planned and rebuild the rest from ${end}?`, 'Rebuild after', () => { rebuildAfterLeg(f, i); persist(); render(); toast(`Kept through leg ${i + 1} · rest rebuilt`); }, 'primary');
+  },
   addLeg() {
     const f = activeFlight();
     const last = f.plan.legs[f.plan.legs.length - 1];
@@ -2647,6 +2677,7 @@ function onField(ev, committed) {
   if (el.dataset.ftz) { const fl = state.flights[el.dataset.ftz]; fl.tz = el.value; persist(); render(); toast(`Clock times for this flight now in ${zoneAbbr(el.value, takeoffOf(fl) || now())}`); return; }
   if (el.dataset.legTank !== undefined) return editLeg(+el.dataset.legTank, 'tank', el.value);
   if (el.dataset.legMin !== undefined) return editLeg(+el.dataset.legMin, 'min', el.value);
+  if (el.dataset.legAfter !== undefined) return editLeg(+el.dataset.legAfter, 'after', el.value);
   if (el.id === 'flyTime') {
     const f = activeFlight();
     let t;

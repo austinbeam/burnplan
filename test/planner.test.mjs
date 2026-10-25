@@ -485,3 +485,33 @@ test('selector BOTH: estimate splits burn, keeps feeding from the other tank, an
   const e4 = P.estimate(flight, cfg, t0 + 90 * m);
   assert.ok(Math.abs(e4.levels.R - 15.5) < 1e-6 && Math.abs(e4.levels.L - 20.5) < 1e-6, JSON.stringify(e4.levels));
 });
+
+test('a main marked done: the other main stops at its level so the tips burn evenly', () => {
+  const cfg = P.resolveConfig(typeFull);
+  const segs = [{ phase: 'cruise', start: 0, min: 65, gph: 14 }, { phase: 'descent', start: 65, min: 15, gph: 18 }, { phase: 'taxi', start: 80, min: 5, gph: 4.5 }];
+  const levels = { LT: 17, LM: 10.8, RM: 6, RT: 17 };
+  const g = P.generatePlan({ cfg, segs, startMin: 0, endMin: 85, levels, currentTank: 'LM', requiredLanding: P.reserveGal(cfg), parked: ['RM'] });
+  const c = P.checkPlan({ cfg, segs, legs: g.legs, levels, startMin: 0, endMin: 85, fromEngineStart: false, parked: ['RM'] });
+  const L = c.landLevels;
+  assert.ok(Math.abs(L.LM - 6) < 0.2, `LM ${L.LM}`);
+  assert.ok(Math.abs(L.LT - L.RT) < 0.6, `tips ${L.LT} / ${L.RT}`);
+  assert.ok(Math.abs(c.landImb) < 1, `imb ${c.landImb}`);
+  assert.equal(g.legs[g.legs.length - 1].tank, 'RT');
+});
+
+test('a main marked done but tips not needed: the other main still burns to the floor', () => {
+  const cfg = P.resolveConfig(typeFull);
+  const segs = [{ phase: 'cruise', start: 0, min: 20, gph: 14 }];
+  const levels = { LT: 4, LM: 10.8, RM: 6, RT: 4 };
+  const g = P.generatePlan({ cfg, segs, startMin: 0, endMin: 20, levels, currentTank: 'LM', parked: ['RM'] });
+  assert.deepEqual(g.legs.map((l) => l.tank), ['LM']);
+  assert.ok(!g.short);
+});
+
+test('switchFrom: a rebuild after a kept leg starts on the other side of its group', () => {
+  const cfg = P.resolveConfig(typeFull);
+  const segs = [{ phase: 'cruise', start: 0, min: 120, gph: 14 }];
+  const levels = { LT: 17, LM: 15, RM: 16, RT: 17 };
+  const g = P.generatePlan({ cfg, segs, startMin: 0, endMin: 120, levels, switchFrom: 'LM', requiredLanding: P.reserveGal(cfg) });
+  assert.equal(g.legs[0].tank, 'RM');
+});

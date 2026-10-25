@@ -24,7 +24,7 @@ try:
         print('before:', legs())
         page.locator('[data-act=toggleDone][data-tank=RM]').dispatch_event('click'); page.wait_for_timeout(300)
         print('after:', legs())
-        print('chip:', page.locator('[data-act=toggleDone][data-tank=RM]').inner_text(), '|', page.locator('.card:has-text("Tanks to use")').inner_text().split('\n')[-1])
+        print('chip:', page.locator('[data-act=toggleDone][data-tank=RM]').inner_text(), '|', page.locator('.card:has-text("mark it done for this flight")').inner_text().split('\n')[-1])
         page.screenshot(path=OUT+'/done_plan.png', full_page=True)
         page.goto('http://localhost:8789/#fly'); page.wait_for_timeout(300)
         print('fly gauges:', page.locator('.gauge .nm').all_inner_texts())

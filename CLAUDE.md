@@ -44,7 +44,8 @@ On every user-visible change, bump **both** `APP_VERSION` in `js/app.js` and `VE
 - Don't plan any tank below the floor (4 gal by default, a hard rule). "Ever is a strong word": this applies to planning, and the plan is still allowed to be overridden.
 - Burn the sides evenly and keep the imbalance under the limit (15 gal, a warning). Sequence: LM → RM (toggling as needed), then LT/RT. Finish on the right side and land balanced. Make legs as long as possible.
 - A flight snapshots its config (`f.cfg`) when built. The one exception: changing a tail's floor (gal or mode) in Settings updates that tail's current draft or active flight's `f.cfg` floor (`applyFloorToFlight`). Austin's rule: this must **not** create a plan version by itself. The current plan is just checked (flagged) against the new floor, and the next rebuild (manual or automatic) uses it. Closed flights keep their floor.
-- The user can edit the plan freely, and broken rules are flagged rather than blocked. Planning changes and actual events are kept separate. Every plan change is versioned (`setPlan(f, plan, reason)` archives the old one).
+- Within a tank group, if one side is used up (floor, or marked done), the other side stops at that level when a later group can carry the fuel, so the tips end even instead of absorbing the difference. Only when the later groups can't cover it does it go down to the floor.
+- The user can edit the plan freely, and broken rules are flagged rather than blocked. A leg can be edited by tank, minutes, or target level after it (**After**; minutes are calculated with `timeForFuel`). Tapping a leg's number keeps legs 1..N and regenerates the rest (`rebuildAfterLeg`, `generatePlan({ switchFrom })`, which starts on the other side of the kept tank's group). Planning changes and actual events are kept separate. Every plan change is versioned (`setPlan(f, plan, reason)` archives the old one).
 - All four tanks are approved for takeoff and landing on this airplane; this is configurable per type.
 - Rules and tanks are configurable per type and per tail (tail overrides). Custom types are possible.
 
@@ -61,6 +62,10 @@ On every user-visible change, bump **both** `APP_VERSION` in `js/app.js` and `VE
 - Burn on Both splits equally (`splitBurn`). In the estimate, if one tank runs dry the other keeps feeding. GI 275 corrections spread over whichever tanks actually burned.
 - Plans run on Both. During a rebuild while on a single tank, the plan stays on that tank only while it's the heavier side, then goes back to Both. On these types L and R are `takeoffLanding: false`, so a plan that takes off or lands on a single tank is flagged.
 - The UI shows Both only for these types: a BOTH button between the gauges, and BOTH in the tank pickers (`P.selectable(cfg)`). Every other type looks exactly as it did before.
+
+### Logged events are fixed in time
+
+Hard rule: nothing in planning (generate, rebuild, keep-and-rebuild, leg edits, marking a tank done) ever changes the time of a logged event. A rebuild may re-estimate the fuel burned between events, never when they happened. Only a manual history edit in the log moves an event (editing takeoff can also shift the other entries, with its checkbox). `test/ui/keeptest.py` checks this.
 
 ### Timeline
 

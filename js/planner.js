@@ -163,7 +163,9 @@ export function timeForFuel(segs, t0, fuel) {
 // ---- plan generation -----------------------------------------------------
 // Greedy "longest legs": each leg burns until the next switch is needed to stay inside the
 // imbalance band or the tank reaches its planned minimum (floor + any reserve hold).
-export function generatePlan({ cfg, segs, startMin = 0, endMin, levels, currentTank = null, requiredLanding = 0, parked = [] }) {
+// switchFrom: the tank of a kept (locked) leg that ends at startMin; the new plan starts by switching
+// off it (to the other side of its group) instead of continuing on it.
+export function generatePlan({ cfg, segs, startMin = 0, endMin, levels, currentTank = null, requiredLanding = 0, parked = [], switchFrom = null }) {
   const tm = tankMap(cfg);
   const ids = cfg.tanks.map((t) => t.id);
   const floor = cfg.rules.floor.gal;
@@ -204,6 +206,7 @@ export function generatePlan({ cfg, segs, startMin = 0, endMin, levels, currentT
     currentTank = null;
   }
 
+  if (switchFrom && !both) currentTank = switchFrom;
   let gStart = 0;
   if (currentTank) { const i = groups.findIndex((g) => g.left === currentTank || g.right === currentTank); if (i >= 0) gStart = i; }
   let lastGroupUsed = -1;
@@ -218,9 +221,19 @@ export function generatePlan({ cfg, segs, startMin = 0, endMin, levels, currentT
     let bL = clamp((b + SL - SR) / 2, 0, uL);
     const bR = clamp(b - bL, 0, uR);
     bL = clamp(b - bR, 0, uL);
+    // If one side of the group is used up (floor, or marked done), don't take the other side below
+    // it when a later group can carry that fuel: the group ends even and the later group (tips) burns
+    // evenly too, instead of absorbing the difference.
+    const later = groups.slice(gi + 1).reduce((a, h) => a + usable(h.left) + usable(h.right), 0);
+    const spare = later - Math.max(0, rem - bL - bR);
+    if (spare > EPS) {
+      const aL = lv[g.left] - bL, aR = lv[g.right] - bR;
+      if (bR >= uR - EPS && aL < aR - EPS) bL -= Math.min(aR - aL, spare, bL);
+      else if (bL >= uL - EPS && aR < aL - EPS) bR -= Math.min(aL - aR, spare, bR);
+    }
     let rL = bL, rR = bR;
     let s;
-    if (gi === gStart && currentTank && (currentTank === g.left || currentTank === g.right)) s = side(currentTank);
+    if (gi === gStart && currentTank && (currentTank === g.left || currentTank === g.right)) s = currentTank === switchFrom ? flip(side(currentTank)) : side(currentTank);
     else if (gi === 0 && tm[cfg.startTank]) s = side(cfg.startTank);
     else s = 'L';
     lastGroupUsed = gi;
