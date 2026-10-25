@@ -4,7 +4,7 @@ import * as S from './store.js';
 import { loadGuide } from './guide.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v35'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v36'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -173,10 +173,15 @@ function planCheck(f) {
   return P.checkPlan({ cfg: f.cfg, segs: p.segs, legs: p.legs, levels: p.levels, startMin: p.startMin, endMin: p.endMin, requiredLanding: requiredLanding(f), fromEngineStart: p.startMin === 0, parked: P.parkedTanks(f) });
 }
 
-function planAbs(f) {
+function planAbs(f, plan = f.plan) {
   if (!f.engineStart) return [];
-  let t = f.plan.startMin;
-  return f.plan.legs.map((l) => { const a = { tank: l.tank, start: MS(f, t), end: MS(f, t + l.min) }; t += l.min; return a; });
+  let t = plan.startMin;
+  return plan.legs.map((l) => { const a = { tank: l.tank, start: MS(f, t), end: MS(f, t + l.min) }; t += l.min; return a; });
+}
+
+// The plan version that was in force at moment T (the first one replaced after T, else the current one).
+function planAt(f, T) {
+  return (f.planHistory || []).find((h) => h.at > T) || f.plan;
 }
 
 function savePlanHistory(f, reason) {
@@ -907,7 +912,10 @@ function renderFlyLive() {
   }
   let next = '';
   if (started && !est.frozen) {
-    const legs = planAbs(f);
+    // While viewing another moment, use the plan that was in force then, not today's rebuilt one.
+    const legs = planAbs(f, ui.viewTime ? planAt(f, T) : f.plan);
+    const sw = ui.viewTime ? f.events.filter((e) => e.type === 'switch' && e.at > T).sort((a, b) => a.at - b.at)[0] : null;
+    const actual = sw ? `<div class="row small mut">Actually switched to ${esc(sw.tank)} at ${fmtTimerS(timerAt(f, sw.at))} (${hm(sw.at)})</div>` : '';
     let idx = legs.findIndex((l) => T >= l.start && T < l.end);
     let due = null;
     if (idx >= 0 && legs[idx].tank !== est.active) due = { tank: legs[idx].tank, at: legs[idx].start, overdue: true };
@@ -921,10 +929,11 @@ function renderFlyLive() {
         <div class="row between"><span class="mut small">${ui.viewTime ? `At ${fmtTimer(timerAt(f, T))}: ` : ''}${due.overdue ? (ui.viewTime ? 'plan says switch' : 'Plan says switch now') : (ui.viewTime ? 'next planned switch' : 'Next planned switch')}</span><span class="mono small mut">${(() => { const n = legs.filter((l, j) => j > 0 && l.start > T && l.tank !== legs[j - 1].tank).length + (due.overdue ? 1 : 0); return `${n} switch${n === 1 ? '' : 'es'} left`; })()}</span></div>
         <div class="row between"><span style="font-size:22px;font-weight:600">${esc(est.active)} → ${esc(due.tank)}</span>
           <span style="text-align:right"><span class="mono" style="font-size:22px;color:${due.overdue ? 'var(--warn)' : 'var(--amber)'}">${fmtTimerS(timerAt(f, due.at))}</span><br><span class="mono" style="font-size:17px;color:${due.overdue ? 'var(--warn)' : 'var(--amber)'}" ${ui.viewTime ? `data-viewcount>${countFromTxt(due.at, T, fmtTimer(timerAt(f, T)))}` : `data-count="${due.at}">${countTxt(due.at)}`}</span><br><span class="z">${hm(due.at)} · ${zt(due.at)}</span></span></div>
+        ${actual}
         <div class="row small mut">${ICON.bell}<span>Alert ${cfg.alerts?.preMin ?? 2} min before and at the switch · screen kept awake</span></div>
         <button class="btn primary block" data-act="openSheet" data-sheet="switch">Record switch</button>
       </div>`;
-    } else next = `<div class="card"><div class="mut">No more switches planned${legs.length ? ` — stay on ${esc(est.active)}` : ''}.</div>
+    } else next = `<div class="card"><div class="mut">No more switches planned${legs.length ? ` — stay on ${esc(est.active)}` : ''}.</div>${actual}
         <button class="btn block" data-act="openSheet" data-sheet="switch">Record switch</button></div>`;
   }
 

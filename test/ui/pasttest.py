@@ -29,6 +29,18 @@ try:
         card = page.locator('#flyLive .card', has_text=re.compile('plan(ned)? (says )?switch', re.I)).first.inner_text().replace('\n', ' | ')
         print('back live card:', card)
         assert 'At +' not in card and 'late' in card, card
+        planned = re.search(r'(\+\d:\d\d:\d\d)', card).group(1)
+        # record the late switch (rebuilds the plan), fly on, then look back: the card uses the plan in force then
+        page.locator('#flyLive [data-act=openSheet][data-sheet=switch]').dispatch_event('click'); page.wait_for_timeout(200)
+        page.locator('[data-act=saveSwitch]').dispatch_event('click'); page.wait_for_timeout(200)
+        page.clock.run_for(20 * M); page.wait_for_timeout(200)
+        page.click('[data-act=alertDismiss]') if page.locator('[data-act=alertDismiss]').count() else None
+        page.fill('#flyTime', '0:20:00'); page.locator('#flyTime').dispatch_event('change'); page.locator('#flyTime').blur()
+        page.clock.run_for(3000); page.wait_for_timeout(200)
+        card = page.locator('#flyLive .card', has_text=re.compile('plan(ned)? (says )?switch', re.I)).first.inner_text().replace('\n', ' | ')
+        print('after rebuild, viewing +0:20:', card, '| plan said', planned)
+        assert planned in card and 'Actually switched to RM' in card, card
+        page.screenshot(path=f'{OUT}/past2.png')
         b.close()
 finally: srv.terminate()
 print('ERRORS', errs)

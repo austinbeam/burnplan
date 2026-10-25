@@ -103,7 +103,7 @@ A tank marked "done for this flight" (a `park` event) is left where it is. Rebui
 
 - Times show local time with Zulu in smaller gray text. Each flight has its own time zone.
 - Alerts always run on real time, even when the Fly page is showing another moment. The header timer is always live.
-- While the Fly page shows another moment, the switch card is written from that moment ("At +0:20: next planned switch", "0:26:07 after +0:20"), never as a real-time "late" countdown. Live countdowns tick only in live view.
+- While the Fly page shows another moment, the switch card is written from that moment ("At +0:20: next planned switch", "0:26:07 after +0:20"), never as a real-time "late" countdown. Live countdowns tick only in live view. It uses the plan version that was in force at that moment (`planAt(f, T)`, from `planHistory`), not the current rebuilt plan, and adds the actual recorded switch after that moment ("Actually switched to RM at +0:50:00").
 - Landing: an alert at the expected arrival. After a grace period with no input, levels freeze at the assumed landing (or after taxi-in, if a landing was recorded).
 - The flight can be ended at a past time, and a closed flight can be reactivated.
 - The Fly page plan and the timeline update live every minute. The Plan page has a Whole flight / Remaining toggle with a now-marker based on actual history.
