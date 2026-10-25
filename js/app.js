@@ -135,8 +135,12 @@ const MS = (f, min) => f.engineStart + min * MIN;
 const takeoffOf = (f) => (f && (f.takeoff ?? (f.engineStart ? f.engineStart + (f.taxiMin || 0) * MIN : null))) || null;
 const timerAt = (f, ms) => (takeoffOf(f) ? (ms - takeoffOf(f)) / MIN : NaN);
 const fmtTimer = (min) => (!isFinite(min) ? '—' : min < -0.5 ? 'taxi' : '+' + dur(Math.max(0, min)));
-const timerZ = (f, ms) => `<span class="mono">${fmtTimer(timerAt(f, ms))}</span> <span class="z">${hm(ms)} · ${zt(ms)}</span>`;
+const timerZ = (f, ms) => `<span class="mono">${fmtTimerS(timerAt(f, ms))}</span> <span class="z">${hm(ms)} · ${zt(ms)}</span>`;
 const timeMode = () => state.settings.timeMode || 'timer';
+// Flight timer with seconds (+2:17:00), matching the panel timer.
+const fmtTimerS = (min) => (!isFinite(min) ? '—' : min < -0.5 ? 'taxi' : '+' + durS(min));
+// Countdown to a moment: "in 0:52:10", or "0:03:12 late".
+const countTxt = (at) => { const d = (at - now()) / MIN; return d >= 0 ? `in ${durS(d)}` : `${durS(-d)} late`; };
 
 function requiredLanding(f, atMs) {
   const cfg = f.cfg;
@@ -821,7 +825,7 @@ function renderFlyLive() {
   const L = cfg.tanks.filter((t) => t.side === 'L'), C = cfg.tanks.filter((t) => t.side === 'C'), R = cfg.tanks.filter((t) => t.side === 'R');
   const side = (arr) => arr.reduce((a, t) => a + est.levels[t.id], 0);
   const SL = side(L), SR = side(R), imb = SL - SR;
-  const el = $('#elapsed'); if (el && f.engineStart) el.textContent = fmtTimer(timerAt(f, T));
+  const el = $('#elapsed'); if (el && f.engineStart) el.textContent = fmtTimerS(timerAt(f, T));
   const z = $('#flyZ'); if (z) z.textContent = flyMode(f) === 'timer' ? `${hm(T)} · ${zt(T)}` : zt(T);
 
   let landedCard = '';
@@ -847,7 +851,7 @@ function renderFlyLive() {
       next = `<div class="card">
         <div class="row between"><span class="mut small">${due.overdue ? 'Plan says switch now' : 'Next planned switch'}</span><span class="mono small mut">${(() => { const n = legs.filter((l, j) => j > 0 && l.start > T && l.tank !== legs[j - 1].tank).length + (due.overdue ? 1 : 0); return `${n} switch${n === 1 ? '' : 'es'} left`; })()}</span></div>
         <div class="row between"><span style="font-size:22px;font-weight:600">${esc(est.active)} → ${esc(due.tank)}</span>
-          <span style="text-align:right"><span class="mono" style="font-size:22px;color:${due.overdue ? 'var(--warn)' : 'var(--amber)'}">${fmtTimer(timerAt(f, due.at))} · ${due.overdue ? `${Math.round(-mins)}m late` : 'in ' + dur(mins)}</span><br><span class="z">${hm(due.at)} · ${zt(due.at)}</span></span></div>
+          <span style="text-align:right"><span class="mono" style="font-size:22px;color:${due.overdue ? 'var(--warn)' : 'var(--amber)'}">${fmtTimerS(timerAt(f, due.at))}</span><br><span class="mono" style="font-size:17px;color:${due.overdue ? 'var(--warn)' : 'var(--amber)'}" data-count="${due.at}">${countTxt(due.at)}</span><br><span class="z">${hm(due.at)} · ${zt(due.at)}</span></span></div>
         <div class="row small mut">${ICON.bell}<span>Alert ${cfg.alerts?.preMin ?? 2} min before and at the switch · screen kept awake</span></div>
         <button class="btn primary block" data-act="openSheet" data-sheet="switch">Record switch</button>
       </div>`;
@@ -893,7 +897,7 @@ function renderFlyLive() {
     </div>
     <div class="sides"><div><span class="mut">Left</span><span class="v">${f1(SL)}</span></div><div class="tot" style="align-items:center"><span class="mut">Total</span><span class="v">${f1(est.total)}</span></div><div style="align-items:flex-end"><span class="mut">Right</span><span class="v">${f1(SR)}</span></div></div>
     <div class="mut small" style="text-align:center;margin-top:10px;line-height:1.4">Imbalance ${f1(Math.abs(imb))} gal${Math.abs(imb) > 0.4 ? ` (${imb < 0 ? 'left' : 'right'} light)` : ''} · limit ${cfg.rules.imbalance.gal} · dashed line = ${cfg.rules.floor.gal} gal floor</div>
-    <div class="mut small" style="text-align:center;margin-top:4px">Tap a tank to record a switch to it</div>
+    <div class="row between" style="margin-top:6px;gap:10px"><span class="mut small">Tap a tank to record a switch to it</span><button class="btn sm" data-act="openSheet" data-sheet="gauge">Log gauges</button></div>
     <div class="stack" style="margin-top:14px">${landedCard}${next}${burnCard}${dest}</div>`;
 }
 
@@ -926,6 +930,7 @@ function openSheet(name, data = {}) {
   if (name === 'shutdown') Object.assign(sd, { at: toField(f.freezeAt || t), used: '' });
   if (name === 'climb') Object.assign(sd, { at: toField(t), len: '', gph: String(f.climbGph || f.cfg.burn.climbGph), rebuild: true });
   if (name === 'level') Object.assign(sd, { at: toField(t), rebuild: true });
+  if (name === 'gauge') Object.assign(sd, { at: f.engineStart ? toField(t) : hm(t), tmode: f.engineStart ? sd.tmode : 'clock', vals: {}, note: '' });
   if (name === 'burn') Object.assign(sd, { at: toField(t), gph: '', scope: 'now', was: P.cruiseRateAt(f, t) });
   if (name === 'start') sd.climb = dur(f.climbMin ?? f.cfg.burn.climbMin);
   if (data.atMs) { sd.at = toField(data.atMs); }
@@ -944,7 +949,7 @@ function renderSheet() {
     return;
   }
   const f = sheetFlight();
-  const body = { burn: sheetBurn, edit: sheetEdit, switch: sheetSwitch, start: sheetStart, climb: sheetClimb, level: sheetLevel, check: sheetCheck, ete: sheetEte, shutdown: sheetShutdown }[ui.sheet];
+  const body = { gauge: sheetGauge, burn: sheetBurn, edit: sheetEdit, switch: sheetSwitch, start: sheetStart, climb: sheetClimb, level: sheetLevel, check: sheetCheck, ete: sheetEte, shutdown: sheetShutdown }[ui.sheet];
   if (!body || !f) { ui.sheet = null; host.innerHTML = ''; return; }
   const [title, inner] = body(f);
   host.innerHTML = `<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
@@ -1069,7 +1074,7 @@ function sheetEte(f) {
     <button class="btn primary block" data-act="saveEte">Save &amp; rebuild plan</button>`];
 }
 
-const EV_LABEL = { burn: 'Cruise burn', takeoff: 'Takeoff', engine: 'Taxi', switch: 'Switch', climb: 'Climb', level: 'Level off', check: 'Fuel check', ete: 'ETE update', shutdown: 'Shutdown', reactivate: 'Reactivation' };
+const EV_LABEL = { gauge: 'Gauges', burn: 'Cruise burn', takeoff: 'Takeoff', engine: 'Taxi', switch: 'Switch', climb: 'Climb', level: 'Level off', check: 'Fuel check', ete: 'ETE update', shutdown: 'Shutdown', reactivate: 'Reactivation' };
 
 function sheetEdit(f) {
   const k = ui.sd.kind, isNew = ui.sd.i < 0;
@@ -1084,6 +1089,8 @@ function sheetEdit(f) {
     if (k === 'switch') fields += `<div class="field"><label>Switched to</label><div class="tankpick">${f.cfg.tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span></button>`).join('')}</div></div>`;
     if (k === 'climb') fields += `<div class="grid2"><div class="field"><label for="sd-len">Climb length</label><input id="sd-len" class="big" data-fmt="hm" data-sd="len" value="${esc(ui.sd.len)}" inputmode="numeric" placeholder="still climbing"></div>
       <div class="field"><label for="sd-cgph">Climb gph</label><input id="sd-cgph" class="big" data-sd="gph" value="${esc(ui.sd.gph)}" inputmode="decimal"></div></div>`;
+    if (k === 'gauge') fields += `<div class="grid4">${f.cfg.tanks.map((t) => `<div class="field"><label for="g-${t.id}">${esc(t.id)} <span class="dim">/${t.capacity}</span></label><input id="g-${t.id}" class="mono" data-gauge="${esc(t.id)}" value="${esc(ui.sd.vals?.[t.id] ?? '')}" inputmode="decimal"></div>`).join('')}</div>
+      <div class="field"><label for="sd-note">Note</label><input id="sd-note" data-sd="note" value="${esc(ui.sd.note || '')}"></div>`;
     if (k === 'burn') fields += `<div class="field"><label for="sd-gph">Cruise fuel flow (gph)</label><input id="sd-gph" class="big key" data-sd="gph" value="${esc(ui.sd.gph)}" inputmode="decimal"></div>
       <label class="check"><input type="checkbox" data-sd="allScope" ${ui.sd.allScope ? 'checked' : ''}>Applies to the whole cruise</label>`;
     if (k === 'check' || k === 'shutdown') fields += `<div class="field"><label for="sd-used">GI 275 fuel used since start</label><input id="sd-used" class="big ${k === 'check' ? 'key' : ''}" data-sd="used" value="${esc(ui.sd.used)}" inputmode="decimal"></div>`;
@@ -1110,6 +1117,8 @@ function openEdit(f, i, kind) {
     gph: String(e.gph || (e.type === 'burn' ? P.cruiseRateAt(f, e.at) : f.climbGph || f.cfg.burn.climbGph)),
     allScope: e.scope === 'all',
     flow: e.type === 'check' && e.setsBurn ? String(e.gph) : '',
+    vals: e.type === 'gauge' ? Object.fromEntries(Object.entries(e.readings || {}).map(([k, v]) => [k, String(v)])) : {},
+    note: e.note || '',
     used: e.used != null ? String(e.used) : '',
     ete: e.eteMin ? dur(e.eteMin) : '', fuel: e.fuelToDest ? String(e.fuelToDest) : '',
     taxi: String(f.taxiMin), shift: true
@@ -1157,12 +1166,19 @@ function saveEdit() {
   const ev = i >= 0 ? f.events[i] : { type: k, enteredAt: now(), added: true };
   ev.at = t; ev.edited = now();
   if (k === 'switch') ev.tank = ui.sd.tank;
+  if (k === 'gauge') {
+    const readings = {};
+    for (const x of f.cfg.tanks) { const v = parseGauge(ui.sd.vals?.[x.id], x.capacity); if (v == null) continue; if (!isFinite(v)) return toast(`Can't read the ${x.id} value`); readings[x.id] = Math.round(v * 10) / 10; }
+    if (!Object.keys(readings).length) return toast('Enter at least one tank');
+    ev.readings = readings; ev.note = (ui.sd.note || '').trim() || null; ev.phase = gaugePhase(f, t);
+  }
   if (k === 'burn') { const g = num(ui.sd.gph); if (!(g > 0)) return toast('Enter the cruise fuel flow'); ev.gph = g; ev.scope = ui.sd.allScope ? 'all' : undefined; }
   if (k === 'climb') { const len = P.parseDur(ui.sd.len); ev.until = isFinite(len) && len > 0 ? t + len * MIN : null; ev.gph = num(ui.sd.gph) > 0 ? num(ui.sd.gph) : ev.gph || f.climbGph; }
   if (k === 'check') { const u = num(ui.sd.used); if (!isFinite(u)) return toast('Enter fuel used'); ev.used = u; const g = num(ui.sd.flow); ev.gph = g > 0 ? g : null; ev.setsBurn = g > 0; }
   if (k === 'shutdown') { const u = num(ui.sd.used); ev.used = isFinite(u) ? u : null; ev.assumed = false; f.shutdown = t; f.finalUsed = ev.used; f.autoEnded = false; }
   if (k === 'ete') { const d = P.parseDur(ui.sd.ete); if (!isFinite(d)) return toast('Enter ETE'); ev.eteMin = d; ev.fuelToDest = num(ui.sd.fuel) || null; }
   if (i < 0) f.events.push(ev);
+  if (k === 'gauge') { f.events.sort((a, b) => a.at - b.at); persist(); closeSheet(); toast(i < 0 ? 'Added' : 'Updated'); render(); return; } // calibration only: no recalculation
   closeSheet(); afterHistoryEdit(f, 'history edit'); toast(i < 0 ? 'Added' : 'Updated'); render();
 }
 
@@ -1176,6 +1192,17 @@ function sheetClimb(f) {
     <div id="sheetPreview"></div>
     <label class="check"><input type="checkbox" data-sd="rebuild" ${ui.sd.rebuild ? 'checked' : ''}>Rebuild rest of plan</label>
     <button class="btn primary block" data-act="saveClimb">Save climb</button>`];
+}
+
+function sheetGauge(f) {
+  return ['Log gauge readings', `
+    ${timeField('sd-at', 'Read at')}
+    <div class="grid4">${f.cfg.tanks.map((t) => `<div class="field"><label for="g-${t.id}" style="color:${tankColor(f.cfg, t.id)}">${esc(t.id)} <span class="dim">/${t.capacity}</span></label><input id="g-${t.id}" class="mono" data-gauge="${esc(t.id)}" value="${esc(ui.sd.vals?.[t.id] ?? '')}" placeholder="gal" inputmode="decimal"></div>`).join('')}</div>
+    <div class="mut small">Gallons, or a fraction like 3/4, a percent, F or E. Leave a tank blank to skip it.</div>
+    <div class="field"><label for="sd-note">Note (optional)</label><input id="sd-note" data-sd="note" value="${esc(ui.sd.note)}" placeholder="e.g. level, 10 min after level-off"></div>
+    <div id="sheetPreview"></div>
+    <div class="mut small">For calibration only: readings are saved to the log and never change any calculation.</div>
+    <button class="btn primary block" data-act="saveGauge">Save readings</button>`];
 }
 
 function sheetBurn(f) {
@@ -1218,6 +1245,7 @@ function sheetShutdown(f) {
 function sheetTime() {
   const f = sheetFlight();
   if (ui.sheet === 'burn' && ui.sd.scope === 'all') return now();
+  if (ui.sheet === 'gauge' && !f.engineStart) { const c = parseClockZ(ui.sd.at, now()); return isFinite(c) && c <= now() + MIN ? c : NaN; }
   const tm = ui.sd.tmode;
   if (takeoffField()) {
     if (tm === 'timer') {
@@ -1284,6 +1312,18 @@ function renderSheetPreview() {
       box.innerHTML = `<div class="kv"><span class="mut">Plan said</span><span class="v">${esc(p.tank)} at ${fmtTimer(timerAt(f, p.start))} (${hm(p.start)})</span></div>
         <div class="kv"><span class="mut">Difference</span><span class="v" style="color:${Math.abs(diff) >= 2 ? 'var(--amber)' : 'var(--tx)'}">${diff >= 0 ? '+' : ''}${diff} min</span></div>`;
     } else box.innerHTML = p ? `<div class="kv"><span class="mut">Plan said</span><span class="v">${esc(p.tank)} at ${fmtTimer(timerAt(f, p.start))} — this is off plan</span></div>` : '';
+  }
+  if (ui.sheet === 'gauge') {
+    const calc = calcLevels(f, t);
+    const rows = f.cfg.tanks.map((x) => {
+      const ind = parseGauge(ui.sd.vals?.[x.id], x.capacity);
+      if (ind == null) return '';
+      if (!isFinite(ind)) return `<div class="kv"><span class="mut">${esc(x.id)}</span><span class="v" style="color:var(--warn)">can't read that</span></div>`;
+      const d = ind - calc[x.id];
+      return `<div class="kv"><span class="mut">${esc(x.id)} indicated · calculated</span><span class="v">${f1(ind)} · ${f1(calc[x.id])} <span style="color:${Math.abs(d) >= 2 ? 'var(--amber)' : 'var(--mut)'}">(${d >= 0 ? '+' : ''}${f1(d)})</span></span></div>`;
+    }).join('');
+    box.innerHTML = `<div class="kv"><span class="mut">Phase</span><span class="v">${esc(gaugePhase(f, t))}</span></div>${rows}`;
+    return;
   }
   if (ui.sheet === 'burn') {
     const g = num(ui.sd.gph);
@@ -1412,6 +1452,19 @@ function saveSheet(kind) {
     if (ui.sd.rebuild) later = [Math.max(t, now()), 'climb'];
     msg = `Climb from ${fmtTimer(timerAt(f, t))}`;
   }
+  if (kind === 'gauge') {
+    const readings = {};
+    for (const x of f.cfg.tanks) {
+      const v = parseGauge(ui.sd.vals?.[x.id], x.capacity);
+      if (v == null) continue;
+      if (!isFinite(v)) return toast(`Can't read the ${x.id} value`);
+      readings[x.id] = Math.round(v * 10) / 10;
+    }
+    if (!Object.keys(readings).length) return toast('Enter at least one tank');
+    f.events.push({ type: 'gauge', at: t, enteredAt, readings, note: (ui.sd.note || '').trim() || null, phase: gaugePhase(f, t) });
+    closeSheet(); persist(); render();
+    return toast(`Gauge readings saved (${Object.keys(readings).length} tank${Object.keys(readings).length > 1 ? 's' : ''})`);
+  }
   if (kind === 'burn') {
     const g = num(ui.sd.gph);
     if (!(g > 0)) return toast('Enter the cruise fuel flow');
@@ -1461,6 +1514,64 @@ function flightSummary(f) {
   return { plannedBlock, plannedFuel, actualBlock, actualFuel, actualGph, avgGph, plannedGph: f.cruiseGph, plannedFlight, actualFlight };
 }
 
+// ---------- gauge calibration ----------
+// A gauge reading can be typed as gallons (9.5), a fraction (3/4), a percent (60%), F or E.
+function parseGauge(str, cap) {
+  const v = String(str || '').trim().toLowerCase();
+  if (!v) return null;
+  if (v === 'f' || v === 'full') return cap;
+  if (v === 'e' || v === 'empty') return 0;
+  let m = v.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+  if (m && +m[2] > 0) return (cap * +m[1]) / +m[2];
+  m = v.match(/^(\d+(?:\.\d+)?)\s*%$/);
+  if (m) return (cap * +m[1]) / 100;
+  const n = parseFloat(v);
+  return isFinite(n) ? n : NaN;
+}
+// Calculated level at a moment; before engine start it's the starting fuel.
+function calcLevels(f, ms, e) {
+  if (!f.engineStart || ms < f.engineStart || (e && e.phase === 'before start')) return { ...f.startLevels };
+  return P.estimate(f, f.cfg, ms).levels;
+}
+function gaugePhase(f, ms) {
+  if (!f.engineStart || ms < f.engineStart) return 'before start';
+  if (f.shutdown && ms >= f.shutdown) return 'after shutdown';
+  const ph = P.phaseAt(f, ms).phase;
+  return ph === 'taxi' && takeoffOf(f) && ms > takeoffOf(f) ? 'cruise' : ph;
+}
+// Every gauge reading across flights, compared with the calculated level at that moment.
+function gaugePoints() {
+  const pts = [];
+  for (const f of Object.values(state.flights)) {
+    for (const e of f.events || []) {
+      if (e.type !== 'gauge') continue;
+      const calc = calcLevels(f, e.at, e);
+      for (const t of f.cfg.tanks) {
+        const ind = e.readings?.[t.id];
+        if (ind == null || !isFinite(ind)) continue;
+        pts.push({ f, e, tank: t.id, cap: t.capacity, ind, calc: calc[t.id], diff: ind - calc[t.id] });
+      }
+    }
+  }
+  return pts;
+}
+function calibrationCard() {
+  const pts = gaugePoints();
+  if (!pts.length) return '';
+  const tanks = [...new Set(pts.map((p) => p.tank))];
+  const bands = [[0, 0.25, 'E–¼'], [0.25, 0.5, '¼–½'], [0.5, 0.75, '½–¾'], [0.75, 1.01, '¾–F']];
+  const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+  const fmt = (d) => `${d >= 0 ? '+' : ''}${f1(d)}`;
+  const cell = (list) => (list.length ? `<span style="color:${Math.abs(avg(list)) >= 2 ? 'var(--amber)' : 'inherit'}">${fmt(avg(list))}</span><span class="dim"> ·${list.length}</span>` : '<span class="dim">—</span>');
+  return `<div class="card"><h2>Gauge calibration</h2>
+    <div class="mut small">Indicated minus calculated, in gallons, averaged over ${pts.length} reading${pts.length === 1 ? '' : 's'} and grouped by how full the tank calculated. Positive = gauge reads high. The small number is how many readings.</div>
+    <div class="legs" style="border:none;overflow-x:auto"><div class="evrow head" style="grid-template-columns:0.8fr repeat(5, 1fr);padding:0"><span>Tank</span><span>All</span>${bands.map((b) => `<span>${b[2]}</span>`).join('')}</div>
+      ${tanks.map((tk) => { const mine = pts.filter((p) => p.tank === tk); return `<div class="evrow" style="grid-template-columns:0.8fr repeat(5, 1fr);padding:0;min-height:36px"><span>${esc(tk)}</span><span>${cell(mine.map((p) => p.diff))}</span>${bands.map((b) => `<span>${cell(mine.filter((p) => p.calc / p.cap >= b[0] && p.calc / p.cap < b[1]).map((p) => p.diff))}</span>`).join('')}</div>`; }).join('')}
+    </div>
+    <div class="mut small">Calculated levels improve as you add GI 275 checks, so readings near a check compare best. Readings never change any calculation.</div>
+    <button class="btn" data-act="exportGauges">Export gauge data (CSV)</button></div>`;
+}
+
 function viewLog() {
   if (ui.sub && state.flights[ui.sub]) return viewFlightDetail(state.flights[ui.sub]);
   const flights = Object.values(state.flights).sort((a, b) => (b.engineStart || b.createdAt) - (a.engineStart || a.createdAt));
@@ -1476,6 +1587,7 @@ function viewLog() {
       <div class="kv"><span class="mut">Avg flight time vs ETE</span><span class="v">${tErr == null ? '—' : (tErr >= 0 ? '+' : '') + Math.round(tErr) + ' min'}</span></div>
       <div class="kv"><span class="mut">Avg fuel error (GI 275)</span><span class="v">${fErr == null ? '—' : `${fErr >= 0 ? '+' : ''}${f1(fErr)} gal (${fPct >= 0 ? '+' : ''}${f1(fPct)}%)`}</span></div>
       <div class="mut small">Positive = took longer / burned more than ForeFlight planned. Enter GI 275 fuel used at shutdown to fill in fuel.</div></div>` : ''}
+    ${calibrationCard()}
     <div class="list">${flights.length ? flights.map((f) => `<a class="item" href="#log/${f.id}"><div><div class="t">${flightTitle(f)}</div><div class="s">${fmtDate(f.engineStart || f.createdAt, f.tz || phoneTZ())} · ${esc(f.tail)} · ${f.status === 'active' ? 'in progress' : f.status === 'draft' ? 'planned' : f.autoSaved ? 'auto-saved' : 'closed'}</div></div>
       <span class="mono ${f.id === state.activeFlightId ? '' : 'mut'}" style="color:${f.id === state.activeFlightId ? 'var(--amber)' : ''}">${f.id === state.activeFlightId ? 'active' : f1(f.finalUsed ?? f.plannedFuel) + ' gal'}</span></a>`).join('') : '<div class="card empty">No flights yet.</div>'}</div>
     <div class="card"><h2>Backup</h2><div class="mut small">Everything is stored only on this phone. Export a backup to keep a copy or move to a new phone.</div>
@@ -1490,6 +1602,7 @@ function viewFlightDetail(f) {
     takeoff: `Takeoff${e.by === 'timer' ? ' (from timer)' : e.by === 'clock' ? ' (clock time)' : ''}`,
     climb: `Climb @ ${f1(e.gph)} gph${e.until ? ` for ${dur((e.until - e.at) / MIN)}` : ' (until level off)'}${e.initial ? ' · initial' : ''}`,
     burn: `Cruise burn ${f1(e.gph)} gph${e.scope === 'all' ? ' · whole cruise' : ' · from here on'}`,
+    gauge: `Gauges (${e.phase || gaugePhase(f, e.at)}) · ${Object.entries(e.readings || {}).map(([k, v]) => { const c = calcLevels(f, e.at, e)[k]; return `${k} ${f1(v)}${isFinite(c) ? ` (${v - c >= 0 ? '+' : ''}${f1(v - c)})` : ''}`; }).join(' · ')}${e.note ? ` · ${e.note}` : ''}`,
     level: 'Level off',
     switch: `Switch → ${e.tank}${e.catchup ? ` (catch-up${e.catchup === 'plan' ? ', as planned' : ''})` : ''}`,
     check: `GI 275 check · ${f1(e.used)} gal used${e.setsBurn ? ` · flow ${f1(e.gph)} gph` : ''}`,
@@ -1513,7 +1626,7 @@ function viewFlightDetail(f) {
     </div>
     ${f.autoEnded || (f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown')) ? `<div class="issue warn">${ICON.warn}<div>${f.autoEnded ? `Ended automatically at the assumed landing time (${f.shutdown ? fmtTimer(timerAt(f, f.shutdown)) : '—'}).` : 'No shutdown was recorded, so fuel kept burning until the flight was auto-saved.'} Tap <b>Shutdown</b> below to set when you actually shut down.</div></div>` : ''}
     ${editable ? `<div class="stack" style="gap:8px"><div class="mut small">Tap an entry to correct it. Add anything you missed:</div>
-      <div class="row wrap">${['switch', 'climb', 'level', 'burn', 'check', ...(f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown') ? ['shutdown'] : [])].map((k) => `<button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="${k}">+ ${EV_LABEL[k]}</button>`).join('')}</div></div>` : ''}
+      <div class="row wrap">${['switch', 'climb', 'level', 'burn', 'check', 'gauge', ...(f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown') ? ['shutdown'] : [])].map((k) => `<button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="${k}">+ ${EV_LABEL[k]}</button>`).join('')}</div></div>` : ''}
     ${f.engineStart ? replayCard(f) : ''}
     ${planVersionsCard(f)}
     ${setupCard(f)}
@@ -1579,7 +1692,7 @@ function download(name, text, type) {
 function flightCsv(f) {
   const rows = [['kind', 'event', 'tank', 'planned_timer', 'actual_timer', 'actual_utc', 'entered_local', 'value', 'gph', 'detail']];
   for (const e of [...f.events].sort((a, b) => a.at - b.at)) {
-    const detail = [e.scope === 'all' ? 'whole cruise' : '', e.until ? `until ${fmtTimer(timerAt(f, e.until))}` : '', e.catchup ? `catch-up ${e.catchup}` : '', e.fuelToDest ? `fuel to go ${f1(e.fuelToDest)}` : '', e.assumed ? 'assumed' : '', e.edited ? 'edited' : ''].filter(Boolean).join('; ');
+    const detail = [e.readings ? 'indicated ' + Object.entries(e.readings).map(([k, v]) => `${k} ${v}`).join(' ') + ' | calculated ' + Object.entries(e.readings).map(([k]) => `${k} ${f1(calcLevels(f, e.at, e)[k])}`).join(' ') : '', e.note || '', e.scope === 'all' ? 'whole cruise' : '', e.until ? `until ${fmtTimer(timerAt(f, e.until))}` : '', e.catchup ? `catch-up ${e.catchup}` : '', e.fuelToDest ? `fuel to go ${f1(e.fuelToDest)}` : '', e.assumed ? 'assumed' : '', e.edited ? 'edited' : ''].filter(Boolean).join('; ');
     rows.push(['event', e.type, e.tank || e.divert || '', e.planned ? fmtTimer(timerAt(f, e.planned.at)) : '', fmtTimer(timerAt(f, e.at)), new Date(e.at).toISOString(), e.enteredAt ? hm(e.enteredAt) : '', e.used ?? e.eteMin ?? '', e.gph ?? '', detail]);
   }
   const versions = [...(f.planHistory || []).map((h) => ({ legs: h.legs, startMin: h.startMin, at: h.createdAt, why: h.created || '' })), { legs: f.plan.legs, startMin: f.plan.startMin, at: f.plan.at, why: f.plan.reason || 'current' }];
@@ -1808,6 +1921,12 @@ const actions = {
   saveClimb: () => saveSheet('climb'),
   saveLevel: () => saveSheet('level'),
   saveBurn: () => saveSheet('burn'),
+  saveGauge: () => saveSheet('gauge'),
+  exportGauges() {
+    const rows = [['flight', 'date_utc', 'tail', 'phase', 'flight_timer', 'tank', 'capacity', 'indicated', 'calculated', 'indicated_minus_calculated', 'note']];
+    for (const p of gaugePoints()) rows.push([`${p.f.from || ''}-${p.f.to || ''}`, new Date(p.e.at).toISOString(), p.f.tail, p.e.phase || gaugePhase(p.f, p.e.at), p.f.engineStart && p.e.at >= p.f.engineStart ? fmtTimer(timerAt(p.f, p.e.at)) : '', p.tank, p.cap, f1(p.ind), f1(p.calc), f1(p.diff), p.e.note || '']);
+    download(`gauge-calibration-${new Date().toISOString().slice(0, 10)}.csv`, rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n'), 'text/csv');
+  },
   sdScope(el) { ui.sd.scope = el.dataset.v; renderSheet(); },
   sdTmode() {
     const t = sheetTime();
@@ -1851,7 +1970,7 @@ const actions = {
   resetStart(el) {
     const f = state.flights[el.dataset.id || state.activeFlightId];
     ask('Undo the start of this flight? Takeoff, switches, climbs, fuel checks and ETE updates are removed and it goes back to planned.', 'Undo start', () => {
-      f.events = [];
+      f.events = f.events.filter((e) => e.type === 'gauge'); // calibration readings are kept
       f.engineStart = null; f.takeoff = null; f.startTank = null; f.shutdown = null; f.finalUsed = null;
       f.freezeAt = null; f.snoozeUntil = null; f.divert = null; f.autoEnded = false; f.autoSaved = false;
       f.status = 'draft';
@@ -1994,6 +2113,12 @@ function onField(ev, committed) {
     if (committed) persist();
     return;
   }
+  if (el.dataset.gauge !== undefined) {
+    ui.sd.vals = ui.sd.vals || {};
+    ui.sd.vals[el.dataset.gauge] = el.value;
+    renderSheetPreview();
+    return;
+  }
   if (el.dataset.row !== undefined) {
     const [i, k] = el.dataset.row.split('.');
     if (ui.sd.rows && ui.sd.rows[+i]) ui.sd.rows[+i][k] = el.value;
@@ -2091,6 +2216,16 @@ document.addEventListener('visibilitychange', () => {
   const f = activeFlight();
   if (document.visibilityState === 'visible') { if (checkIdle()) return; keepAwake(!!(f && f.status === 'active' && ui.route === 'fly')); render(); }
 });
+
+// ---------- 1 s ticker: flight timer, countdowns ----------
+setInterval(() => {
+  if (ui.route !== 'fly' || ui.viewTime) return;
+  const f = activeFlight();
+  if (!f || !f.engineStart) return;
+  const el = $('#elapsed'); if (el) el.textContent = fmtTimerS(timerAt(f, now()));
+  const ft = $('#flyTime'); if (ft && document.activeElement !== ft) ft.value = flyTimeValue(f);
+  document.querySelectorAll('[data-count]').forEach((n) => { n.textContent = countTxt(+n.dataset.count); });
+}, 1000);
 
 // ---------- tick ----------
 setInterval(() => {

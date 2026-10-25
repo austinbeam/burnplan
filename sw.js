@@ -1,6 +1,6 @@
 // Offline-first service worker: the whole app is cached on first load.
 // Bump VERSION whenever app files change so phones pick up the update.
-const VERSION = 'burnplan-v23';
+const VERSION = 'burnplan-v24';
 const FILES = [
   './',
   'index.html',
