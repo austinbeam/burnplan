@@ -299,6 +299,13 @@ export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requi
 //         {type:'climb', at, gph, until?} (until = expected/actual level-off) | {type:'level', at}
 const takeoffMs = (f) => f.takeoff ?? (f.engineStart + ((f.segs.find((s) => s.phase === 'taxi') || { min: 0 }).min) * MS_MIN);
 
+// Expected length of a climb with no length entered: the flight's initial climb time for the
+// climb after takeoff, otherwise the aircraft's mid-flight climb default (5 min if not set).
+export function climbLenMin(flight, ev) {
+  if (ev && ev.initial) return flight.climbMin ?? flight.cfg?.burn?.climbMin ?? 14;
+  return flight.cfg?.burn?.stepClimbMin ?? 5;
+}
+
 // The climb in progress at ms, if any.
 export function activeClimb(flight, ms) {
   const evs = (flight.events || []).filter((e) => e.at <= ms && (e.type === 'climb' || e.type === 'level')).sort((a, b) => a.at - b.at);
@@ -312,10 +319,10 @@ export function activeClimb(flight, ms) {
 // A burn entry with scope 'all' applies to the whole cruise, before and after it was entered; any later
 // from-now-on change still takes over from its own time.
 function lastEteRate(flight, ms) {
-  const evs = (flight.events || []).filter((e) => (e.type === 'ete' || e.type === 'burn') && (e.at <= ms || (e.type === 'burn' && e.scope === 'all'))).sort((a, b) => a.at - b.at);
+  const evs = (flight.events || []).filter((e) => (e.type === 'ete' || e.type === 'burn' || (e.type === 'check' && e.setsBurn)) && (e.at <= ms || (e.type === 'burn' && e.scope === 'all'))).sort((a, b) => a.at - b.at);
   for (let i = evs.length - 1; i >= 0; i--) {
     const e = evs[i];
-    if (e.type === 'burn' && e.gph > 0) return { at: e.at, gph: e.gph };
+    if ((e.type === 'burn' || (e.type === 'check' && e.setsBurn)) && e.gph > 0) return { at: e.at, gph: e.gph };
     if (e.type === 'ete') {
       if (e.fuelToDest > 0 && e.eteMin > 0) return { at: e.at, gph: e.fuelToDest / (e.eteMin / 60) };
       if (e.gph > 0) return { at: e.at, gph: e.gph };
@@ -358,6 +365,7 @@ export function estimate(flight, cfg, T0) {
   let active = flight.startTank;
   let used = 0;
   let sinceCheck = Object.fromEntries(ids.map((i) => [i, 0]));
+  let climbSince = Object.fromEntries(ids.map((i) => [i, 0]));
   const evs = (flight.events || []).filter((e) => e.at <= T && e.at >= flight.engineStart).sort((a, b) => a.at - b.at || (a.type === 'switch' ? -1 : 1));
   const segBreaks = flight.segs.map((s) => flight.engineStart + s.start * MS_MIN).concat(flight.segs.map((s) => flight.engineStart + (s.start + s.min) * MS_MIN));
   const untils = evs.filter((e) => e.until).map((e) => e.until);
@@ -369,12 +377,24 @@ export function estimate(flight, cfg, T0) {
       const e = evs[ei++];
       if (e.type === 'switch') { active = e.tank; empty = null; }
       else if (e.type === 'check' && e.used >= 0) {
-        const delta = e.used - used;
-        const tot = Object.values(sinceCheck).reduce((x, y) => x + y, 0);
-        if (tot > EPS) for (const id of ids) lv[id] -= (delta * sinceCheck[id]) / tot;
-        else lv[active] -= delta;
+        // The engine monitor is right. Climb is the least certain part of the estimate, so any
+        // difference goes first to the tanks used during climb since the last check; only a
+        // reduction bigger than that whole climb burn spills over to the rest of the burn.
+        let delta = e.used - used;
+        const sum = (o) => Object.values(o).reduce((x, y) => x + y, 0);
+        const climbTot = sum(climbSince), tot = sum(sinceCheck);
+        if (climbTot > EPS) {
+          const toClimb = Math.max(delta, -climbTot);
+          for (const id of ids) lv[id] -= (toClimb * climbSince[id]) / climbTot;
+          delta -= toClimb;
+        }
+        if (Math.abs(delta) > EPS) {
+          if (tot > EPS) for (const id of ids) lv[id] -= (delta * sinceCheck[id]) / tot;
+          else lv[active] -= delta;
+        }
         used = e.used;
         sinceCheck = Object.fromEntries(ids.map((i) => [i, 0]));
+        climbSince = Object.fromEntries(ids.map((i) => [i, 0]));
       }
     }
     if (p === points.length - 1) break;
@@ -389,6 +409,7 @@ export function estimate(flight, cfg, T0) {
     }
     lv[active] -= burn;
     sinceCheck[active] += burn;
+    if (phaseAt(flight, a).phase === 'climb') climbSince[active] += burn;
     used += burn;
   }
   const total = ids.reduce((x, i) => x + lv[i], 0);
@@ -438,7 +459,7 @@ export function remainingSegs(flight, fromMs) {
   const segs = [];
   let t = nowMin;
   if (climbing) {
-    const climbEnd = climbing.until || climbing.at + (flight.climbMin || 10) * MS_MIN;
+    const climbEnd = climbing.until || climbing.at + climbLenMin(flight, climbing) * MS_MIN;
     const cEnd = Math.min(endMin, Math.max(nowMin, (climbEnd - flight.engineStart) / MS_MIN));
     if (cEnd > t) { segs.push({ phase: 'climb', start: t, min: cEnd - t, gph: climbing.gph }); t = cEnd; }
   }

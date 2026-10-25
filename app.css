@@ -211,3 +211,6 @@ details.explain p b { color: var(--tx); }
 .timebox .lbl + .z { white-space: nowrap; }
 .lbl .livedot { height: auto; padding: 0 0 0 6px; font-size: 12px; gap: 4px; vertical-align: middle; }
 .lbl .livedot .dot { width: 6px; height: 6px; }
+.pv { border-top: 1px solid var(--line2); padding: 8px 0; display: flex; flex-direction: column; gap: 3px; }
+.pv.cur b { color: var(--amber); }
+.pv .seq { line-height: 1.6; }

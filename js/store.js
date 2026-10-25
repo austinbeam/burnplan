@@ -52,6 +52,11 @@ export function mergeImport(state, data) {
     if (data.type && !data.type.builtin) out.customTypes = { ...out.customTypes, [data.type.id]: data.type };
     return { state: out, summary: `Tail ${data.tail.tail}` };
   }
+  if (data.kind === 'flight' && data.flight && data.flight.id) {
+    out.flights = { ...out.flights, [data.flight.id]: data.flight };
+    if (data.tail && !out.tails[data.tail.tail]) out.tails = { ...out.tails, [data.tail.tail]: data.tail };
+    return { state: out, summary: `Flight ${data.flight.from || ''} → ${data.flight.to || ''}` };
+  }
   if (data.kind === 'type' && data.type) {
     out.customTypes = { ...out.customTypes, [data.type.id]: { ...data.type, builtin: false } };
     return { state: out, summary: `Type ${data.type.name}` };

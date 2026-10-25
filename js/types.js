@@ -23,7 +23,8 @@ export const BUILTIN_TYPES = [
     burn: {
       ground: 4.5,     // gph, taxi incl. run-up
       climbGph: 20,
-      climbMin: 14,
+      climbMin: 14,       // initial climb, per-flight override in Setup
+      stepClimbMin: 5,    // expected length of a mid-flight climb when none is entered
       cruise: 15,      // typical cruise, used when ForeFlight fuel is blank
       base: 16         // conservative base cruise, used for reserves
     },

@@ -132,9 +132,9 @@ test('actual climbs drive the burn rate, including a mid-flight climb', () => {
   // mid-flight climb, still climbing
   f.events.push({ type: 'climb', at: to + 90 * m, gph: 20 });
   assert.equal(P.phaseAt(f, to + 95 * m).phase, 'climb');
-  const rs = P.remainingSegs(f, to + 95 * m);
+  const rs = P.remainingSegs(f, to + 92 * m);
   assert.equal(rs.segs[0].phase, 'climb');
-  assert.equal(Math.round(rs.segs[0].min), 9); // assumed 14-minute climb
+  assert.equal(Math.round(rs.segs[0].min), 3); // mid-flight climb assumed 5 minutes
   f.events.push({ type: 'level', at: to + 100 * m });
   assert.equal(P.phaseAt(f, to + 101 * m).phase, 'cruise');
   const used = P.estimate(f, cfg, to + 101 * m).used - P.estimate(f, cfg, to + 90 * m).used;
@@ -217,4 +217,49 @@ test('cruise burn for the whole cruise applies retroactively; later point change
   const g = { ...f, events: [{ type: 'burn', at: to + 60 * m, gph: 13, scope: 'all' }] };
   assert.equal(P.phaseAt(g, to + 5 * m).phase, 'climb');
   assert.equal(P.phaseAt(g, to + 30 * m).gph, 13);
+});
+
+test('a GI 275 check puts the difference on the climb first and never changes cruise burn', () => {
+  const cfg = P.resolveConfig(type);
+  const tl = P.buildTimeline(cfg, { taxiMin: 15, eteMin: 200, totalFuel: 55 });
+  const m = 60000, t0 = Date.UTC(2026, 9, 25, 12, 0), to = t0 + 15 * m;
+  const base = { engineStart: t0, takeoff: to, startLevels: { ...full }, startTank: 'LM', segs: tl.segments, cruiseGph: tl.cruiseGph };
+  // climb on LM (18 min @ 25), switch to RM at +0:40, check at +1:00 says 2 gal less than estimated
+  const evs = [{ type: 'climb', at: to, gph: 25, until: to + 18 * m }, { type: 'switch', tank: 'RM', at: to + 40 * m }];
+  const f0 = { ...base, events: evs };
+  const est = P.estimate(f0, cfg, to + 60 * m);
+  const f1 = { ...base, events: [...evs, { type: 'check', at: to + 60 * m, used: est.used - 2, gph: 13 }] };
+  const e1 = P.estimate(f1, cfg, to + 60 * m);
+  assert.ok(Math.abs(e1.levels.LM - (est.levels.LM + 2)) < 1e-6, 'all 2 gal back on LM (the climb tank)');
+  assert.ok(Math.abs(e1.levels.RM - est.levels.RM) < 1e-6, 'RM untouched');
+  // the check's fuel flow does not change the cruise rate
+  assert.equal(P.phaseAt(f1, to + 70 * m).gph, tl.cruiseGph);
+  // a reduction bigger than the whole climb burn spills to the rest
+  const climbBurn = 25 * 18 / 60;
+  const f2 = { ...base, events: [...evs, { type: 'check', at: to + 60 * m, used: est.used - climbBurn - 3 }] };
+  const e2 = P.estimate(f2, cfg, to + 60 * m);
+  assert.ok(Math.abs(e2.total - (est.total + climbBurn + 3)) < 1e-6);
+  assert.ok(e2.levels.RM > est.levels.RM, 'spill-over reaches RM');
+  // a later check with no climb since then splits by burn as before
+  const f3 = { ...f1, events: [...f1.events, { type: 'check', at: to + 90 * m, used: P.estimate(f1, cfg, to + 90 * m).used + 1 }] };
+  const a = P.estimate(f1, cfg, to + 90 * m), b = P.estimate(f3, cfg, to + 90 * m);
+  assert.ok(Math.abs(b.levels.RM - (a.levels.RM - 1)) < 1e-6, 'only RM burned since the last check');
+});
+
+test('mid-flight climbs default to the aircraft step-climb length; the initial climb uses the flight climb time', () => {
+  const cfg = P.resolveConfig(type);
+  assert.equal(cfg.burn.stepClimbMin, 5);
+  const tl = P.buildTimeline(cfg, { taxiMin: 15, eteMin: 200, totalFuel: 55, climbMin: 18 });
+  const m = 60000, t0 = Date.UTC(2026, 9, 25, 12, 0), to = t0 + 15 * m;
+  const f = { engineStart: t0, takeoff: to, startLevels: { ...full }, startTank: 'LM', segs: tl.segments, cruiseGph: tl.cruiseGph, climbMin: 18, cfg,
+    events: [{ type: 'climb', at: to, gph: 20, initial: true }] };
+  assert.equal(P.climbLenMin(f, f.events[0]), 18);
+  assert.equal(Math.round(P.remainingSegs(f, to + 2 * m).segs[0].min), 16);
+  f.events.push({ type: 'level', at: to + 18 * m }, { type: 'climb', at: to + 90 * m, gph: 20 });
+  assert.equal(P.climbLenMin(f, f.events[2]), 5);
+  const rs = P.remainingSegs(f, to + 91 * m);
+  assert.equal(rs.segs[0].phase, 'climb');
+  assert.equal(Math.round(rs.segs[0].min), 4);
+  const g = { ...f, cfg: P.resolveConfig(type, { overrides: { burn: { stepClimbMin: 8 } } }) };
+  assert.equal(P.climbLenMin(g, f.events[2]), 8);
 });
