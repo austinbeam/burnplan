@@ -122,8 +122,8 @@ const activeFlight = () => (state.activeFlightId ? state.flights[state.activeFli
 const MS = (f, min) => f.engineStart + min * MIN;
 // The pilot's flight timer starts at takeoff; taxi happens before it.
 const takeoffOf = (f) => (f && (f.takeoff ?? (f.engineStart ? f.engineStart + (f.taxiMin || 0) * MIN : null))) || null;
-const timerAt = (f, ms) => (ms - takeoffOf(f)) / MIN;
-const fmtTimer = (min) => (min < -0.5 ? 'taxi' : '+' + dur(Math.max(0, min)));
+const timerAt = (f, ms) => (takeoffOf(f) ? (ms - takeoffOf(f)) / MIN : NaN);
+const fmtTimer = (min) => (!isFinite(min) ? '—' : min < -0.5 ? 'taxi' : '+' + dur(Math.max(0, min)));
 const timerZ = (f, ms) => `<span class="mono">${fmtTimer(timerAt(f, ms))}</span> <span class="z">${hm(ms)} · ${zt(ms)}</span>`;
 const timeMode = () => state.settings.timeMode || 'timer';
 
@@ -715,7 +715,7 @@ function viewFly() {
   return `<div class="top"><div><div class="kicker">${esc(f.tail)} · ${esc(typeById(f.typeId)?.name || '')}</div><h1>${flightTitle(f)}</h1></div>
     <div style="text-align:right">${f.engineStart ? `<div class="kicker">Takeoff ${hm(takeoffOf(f))} ${clockMode() === 'zulu' ? '' : zoneAbbr(viewZone(), takeoffOf(f))} <span class="z">${zt(takeoffOf(f))}</span></div><div class="mono" style="font-size:20px" id="elapsed"></div>` : '<span class="badge">Planned</span>'}</div></div>
   <div class="stack">
-    <div class="card ${ui.viewTime ? 'viewing' : ''}" style="padding:10px 12px">
+    ${f.engineStart ? `<div class="card ${ui.viewTime ? 'viewing' : ''}" style="padding:10px 12px">
       <div class="timebox">
         <div class="stack" style="gap:2px;min-width:64px"><label for="flyTime" class="lbl">${flyMode(f) === 'timer' ? 'Flight timer' : `${clockLabel()} clock`}</label><span class="z" id="flyZ"></span></div>
         <input id="flyTime" data-fmt="hm" inputmode="numeric" value="${flyTimeValue(f)}" aria-label="${flyMode(f) === 'timer' ? 'Flight timer' : 'Clock time'} to show levels for">
@@ -724,8 +724,8 @@ function viewFly() {
           ? '<button class="btn sm backlive" data-act="liveTime" style="height:44px">Go live</button>'
           : '<span class="livedot" role="status" aria-label="Showing live time"><span class="dot"></span>Live</span>'}
       </div>
-      ${ui.viewTime ? `<div class="small" style="color:var(--amber)">Not live: showing ${fmtTimer(timerAt(f, ui.viewTime))}. Alerts still run on real time; returns to live after 2 min.</div>` : ''}
-    </div>
+      ${ui.viewTime ? `<div class="small" style="color:var(--amber)">Not live: showing ${flyMode(f) === 'timer' ? fmtTimer(timerAt(f, ui.viewTime)) : `${hm(ui.viewTime)} (${fmtTimer(timerAt(f, ui.viewTime))})`}. Alerts still run on real time; returns to live after 2 min.</div>` : ''}
+    </div>` : ''}
     ${f.engineStart && clockMode() !== 'zulu' ? zoneControl(f, false) : ''}
     <div id="flyLive"></div>
     ${f.engineStart ? `
@@ -1238,6 +1238,7 @@ function saveSheet(kind) {
     if (sw && sw.error) return toast(sw.error);
     f.takeoff = takeoff; f.engineStart = takeoff - f.taxiMin * MIN; f.startTank = ui.sd.tank; f.status = 'active';
     f.tz = f.tz || phoneTZ();
+    ui.viewTime = null;
     if (f.plan.legs[0] && f.plan.legs[0].tank !== f.startTank) { f.plan.legs[0].tank = f.startTank; f.plan.source = 'edited'; }
     f.events.push({ type: 'engine', at: f.engineStart, enteredAt, tank: f.startTank, assumed: true });
     f.events.push({ type: 'takeoff', at: takeoff, enteredAt, by: ui.sd.tmode });
