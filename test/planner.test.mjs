@@ -176,3 +176,45 @@ test('estimate never burns a tank below empty, and stops at landing/shutdown', (
   assert.ok(Math.abs(P.estimate(f, cfg, t0 + 500 * m).total - P.estimate(f, cfg, t0 + 100 * m).total) < 1e-9);
   assert.equal(P.arrivalOf(f), t0 + 166 * m);
 });
+
+test('set cruise burn mid-flight changes the cruise rate from then on', () => {
+  const cfg = P.resolveConfig(type);
+  const tl = P.buildTimeline(cfg, { taxiMin: 20, eteMin: 146, totalFuel: 39 });
+  const m = 60000, t0 = Date.UTC(2026, 9, 23, 20, 0), to = t0 + 20 * m;
+  const f = { engineStart: t0, takeoff: to, startLevels: { ...full, LM: 100 }, startTank: 'LM', segs: tl.segments, cruiseGph: tl.cruiseGph,
+    events: [{ type: 'climb', at: to, gph: 20, until: to + 12 * m }] };
+  const before = P.estimate(f, cfg, to + 60 * m).used;
+  f.events.push({ type: 'burn', at: to + 60 * m, gph: 13.2 });
+  assert.equal(P.phaseAt(f, to + 70 * m).gph, 13.2);
+  assert.ok(Math.abs(P.estimate(f, cfg, to + 90 * m).used - before - (30 / 60) * 13.2) < 1e-6);
+  assert.equal(P.remainingSegs(f, to + 90 * m).segs.at(-1).gph, 13.2);
+  // a later ETE update with fuel overrides it, and a later burn overrides that
+  f.events.push({ type: 'ete', at: to + 100 * m, eteMin: 60, fuelToDest: 15 });
+  assert.equal(P.phaseAt(f, to + 101 * m).gph, 15);
+  f.events.push({ type: 'burn', at: to + 110 * m, gph: 14 });
+  assert.equal(P.phaseAt(f, to + 111 * m).gph, 14);
+  // climbing still uses climb burn
+  f.events.push({ type: 'climb', at: to + 120 * m, gph: 21 });
+  assert.equal(P.phaseAt(f, to + 121 * m).gph, 21);
+});
+
+test('cruise burn for the whole cruise applies retroactively; later point changes still win', () => {
+  const cfg = P.resolveConfig(type);
+  const tl = P.buildTimeline(cfg, { taxiMin: 20, eteMin: 146, totalFuel: 39 });
+  const m = 60000, t0 = Date.UTC(2026, 9, 23, 20, 0), to = t0 + 20 * m;
+  const f = { engineStart: t0, takeoff: to, startLevels: { ...full, LM: 100 }, startTank: 'LM', segs: tl.segments, cruiseGph: tl.cruiseGph,
+    events: [{ type: 'climb', at: to, gph: 20, until: to + 12 * m }] };
+  f.events.push({ type: 'burn', at: to + 60 * m, gph: 13, scope: 'all' });
+  assert.equal(P.phaseAt(f, to + 30 * m).gph, 13, 'applies before it was entered');
+  assert.equal(P.phaseAt(f, to + 5 * m).gph, 20, 'climb untouched');
+  assert.equal(P.phaseAt(f, t0 + 5 * m).gph, 4.5, 'taxi untouched');
+  const used = P.estimate(f, cfg, to + 60 * m).used;
+  assert.ok(Math.abs(used - (1.5 + 4 + (48 / 60) * 13)) < 1e-6, used);
+  f.events.push({ type: 'burn', at: to + 70 * m, gph: 15 });
+  assert.equal(P.phaseAt(f, to + 65 * m).gph, 13);
+  assert.equal(P.phaseAt(f, to + 75 * m).gph, 15);
+  // without climb events, planned climb segment still burns at climb rate
+  const g = { ...f, events: [{ type: 'burn', at: to + 60 * m, gph: 13, scope: 'all' }] };
+  assert.equal(P.phaseAt(g, to + 5 * m).phase, 'climb');
+  assert.equal(P.phaseAt(g, to + 30 * m).gph, 13);
+});

@@ -198,3 +198,16 @@ button.gauge:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px
 .card.viewing { border-color: var(--amber); }
 .timebox { flex-wrap: wrap; }
 .timebox input { min-width: 96px; }
+details.explain { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 4px 12px; }
+details.explain summary { font-size: 13px; font-weight: 600; color: var(--blue); min-height: 36px; }
+details.explain p { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: var(--mut); }
+details.explain p b { color: var(--tx); }
+.flightmgmt { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.flightmgmt .lbl { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+.linkbtn { background: none; border: none; color: var(--mut); font-size: 13px; text-decoration: underline; text-underline-offset: 3px; padding: 8px 0; align-self: flex-start; cursor: pointer; min-height: 36px; }
+.card .btn.block { margin-top: 2px; }
+.grid3 .btn { padding: 0 6px; }
+.timebox input { min-width: 132px; font-size: 20px; padding: 0 8px; }
+.timebox .lbl + .z { white-space: nowrap; }
+.lbl .livedot { height: auto; padding: 0 0 0 6px; font-size: 12px; gap: 4px; vertical-align: middle; }
+.lbl .livedot .dot { width: 6px; height: 6px; }

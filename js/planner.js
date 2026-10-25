@@ -306,12 +306,19 @@ export function activeClimb(flight, ms) {
   return last;
 }
 
+// Latest cruise burn the pilot gave us: a "set cruise burn" entry, or the rate implied by an ETE update.
+// A burn entry with scope 'all' applies to the whole cruise, before and after it was entered; any later
+// from-now-on change still takes over from its own time.
 function lastEteRate(flight, ms) {
-  const etes = (flight.events || []).filter((e) => e.type === 'ete' && e.at <= ms).sort((a, b) => a.at - b.at);
-  const e = etes[etes.length - 1];
-  if (!e) return null;
-  if (e.fuelToDest > 0 && e.eteMin > 0) return { at: e.at, gph: e.fuelToDest / (e.eteMin / 60) };
-  if (e.gph > 0) return { at: e.at, gph: e.gph };
+  const evs = (flight.events || []).filter((e) => (e.type === 'ete' || e.type === 'burn') && (e.at <= ms || (e.type === 'burn' && e.scope === 'all'))).sort((a, b) => a.at - b.at);
+  for (let i = evs.length - 1; i >= 0; i--) {
+    const e = evs[i];
+    if (e.type === 'burn' && e.gph > 0) return { at: e.at, gph: e.gph };
+    if (e.type === 'ete') {
+      if (e.fuelToDest > 0 && e.eteMin > 0) return { at: e.at, gph: e.fuelToDest / (e.eteMin / 60) };
+      if (e.gph > 0) return { at: e.at, gph: e.gph };
+    }
+  }
   return null;
 }
 
@@ -329,10 +336,12 @@ export function phaseAt(flight, ms) {
   if (c) return { phase: 'climb', gph: c.gph, since: c.at, until: c.until || null };
   const hasClimbEvents = (flight.events || []).some((e) => e.type === 'climb' && e.at <= ms);
   const e = lastEteRate(flight, ms);
-  if (hasClimbEvents || e) return { phase: 'cruise', gph: cruiseRateAt(flight, ms) };
+  if (hasClimbEvents) return { phase: 'cruise', gph: cruiseRateAt(flight, ms) };
   const t = (ms - flight.engineStart) / MS_MIN;
   const seg = flight.segs.find((s) => t >= s.start - EPS && t < s.start + s.min - EPS) || flight.segs[flight.segs.length - 1];
-  return { phase: seg ? seg.phase : 'cruise', gph: rateAt(flight.segs, t) };
+  const phase = seg ? seg.phase : 'cruise';
+  if (phase === 'cruise' || (e && e.at <= ms && t >= seg.start + seg.min - EPS)) return { phase: 'cruise', gph: e ? e.gph : rateAt(flight.segs, t) };
+  return { phase, gph: rateAt(flight.segs, t) };
 }
 
 export function rateAtMs(flight, ms) { return phaseAt(flight, ms).gph; }
@@ -421,7 +430,8 @@ export function remainingSegs(flight, fromMs) {
   const endMin = Math.max(nowMin, last ? (last.at - flight.engineStart) / MS_MIN + last.eteMin : planEnd);
   const climbing = activeClimb(flight, fromMs);
   const hasClimbEvents = (flight.events || []).some((e) => e.type === 'climb' && e.at <= fromMs);
-  if (!last && !climbing && !hasClimbEvents) return { segs: flight.segs, startMin: nowMin, endMin };
+  const hasBurn = (flight.events || []).some((e) => e.type === 'burn' && (e.at <= fromMs || e.scope === 'all'));
+  if (!last && !climbing && !hasClimbEvents && !hasBurn) return { segs: flight.segs, startMin: nowMin, endMin };
   const cruise = cruiseRateAt(flight, fromMs);
   const segs = [];
   let t = nowMin;
@@ -439,7 +449,9 @@ export function parseDur(str) {
   if (str === null || str === undefined) return NaN;
   const s = String(str).trim().toLowerCase();
   if (!s) return NaN;
-  let m = s.match(/^(\d+)\s*[:h]\s*(\d{1,2})\s*m?$/);
+  let m = s.match(/^(\d+):(\d{1,2}):(\d{1,2})$/);   // h:mm:ss (flight timer)
+  if (m) return +m[1] * 60 + +m[2] + +m[3] / 60;
+  m = s.match(/^(\d+)\s*[:h]\s*(\d{1,2})\s*m?$/);
   if (m) return +m[1] * 60 + +m[2];
   m = s.match(/^(\d+)\s*h$/);
   if (m) return +m[1] * 60;
