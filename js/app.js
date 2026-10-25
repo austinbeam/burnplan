@@ -3,7 +3,7 @@ import * as P from './planner.js';
 import * as S from './store.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v29'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v30'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -1248,7 +1248,7 @@ function sheetLevel(f) {
   const ph = P.phaseAt(f, now());
   const exp = ph.phase === 'climb' && !ph.until ? ph.since + P.climbLenMin(f, P.activeClimb(f, now())) * MIN : null;
   return ['Level off', `${timeField('sd-at', 'Leveled at')}
-    ${exp && exp < now() ? `<div class="row wrap"><button class="btn sm" data-act="sdAtMs" data-ms="${exp}">Expected ${fmtTimer(timerAt(f, exp))}</button><button class="btn sm" data-act="sdAtMs" data-ms="${now()}">Now</button></div>` : ''}
+    ${exp && exp < now() ? `<div class="row wrap"><button class="btn sm" data-act="sdAtMs" data-ms="${exp}">Expected ${fmtTimer(timerAt(f, exp))}</button></div>` : ''}
     <div id="sheetPreview"></div>
     <label class="check"><input type="checkbox" data-sd="rebuild" ${ui.sd.rebuild ? 'checked' : ''}>Rebuild rest of plan</label>
     <button class="btn primary block" data-act="saveLevel">Save</button>`];
@@ -1259,9 +1259,8 @@ function sheetShutdown(f) {
   const picks = [];
   if (f.freezeAt) picks.push([f.freezeAt, `Assumed landing ${fmtTimer(timerAt(f, f.freezeAt))}`]);
   else if (arr && arr < now()) picks.push([arr, `Expected landing ${fmtTimer(timerAt(f, arr))}`]);
-  picks.push([now(), 'Now']);
   return ['End flight', `${timeField('sd-at', 'Shut down at')}
-    <div class="row wrap">${picks.map(([ms, label]) => `<button class="btn sm" data-act="sdAtMs" data-ms="${ms}">${esc(label)}</button>`).join('')}</div>
+    ${picks.length ? `<div class="row wrap">${picks.map(([ms, label]) => `<button class="btn sm" data-act="sdAtMs" data-ms="${ms}">${esc(label)}</button>`).join('')}</div>` : ''}
     <div class="mut small">Enter the flight timer reading (or clock time) when you actually shut down; it can be in the past. Fuel stops burning there.</div>
     <div class="field"><label for="sd-used">GI 275 total fuel used (optional)</label><input id="sd-used" class="big" data-sd="used" value="${esc(ui.sd.used)}" inputmode="decimal"></div>
     <div id="sheetPreview"></div>
