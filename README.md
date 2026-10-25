@@ -14,7 +14,7 @@ Open it at https://austinbeam.github.io/burnplan/. It runs in your phone's brows
 
 - **Plan**: type in ForeFlight's ETE and total fuel. Burnplan builds a tank switching plan with the longest legs that keep every tank above its floor, keep the sides within the imbalance limit and land with your reserve.
 - **Fly**: shows the live tank levels, the next planned switch and when it's due. You record what actually happens (switches, climbs, descents, engine monitor readings, new ETEs) and the estimate and plan follow along.
-- **Fuel**: records fuelings tank by tank from the pump readings, and fills in the next flight's starting fuel.
+- **Fuel**: records fuelings tank by tank from the pump readings (or just the total, if you weren't there), and fills in the next flight's starting fuel.
 - **Log**: keeps every flight with its plan next to what really happened, so you can see how your planning compares over time.
 
 Burnplan is a planning aid, not an approved fuel management system. Always check the aircraft's gauges, engine monitor and POH.
@@ -98,6 +98,8 @@ Type a time into the flight timer box on the Fly page to see the tanks at that m
 ## Fuel tab
 
 Record a fueling at the pump: top off, specific amounts, or tips full with the mains to the tabs. Enter the **cumulative** pump reading after each tank, in the order you fill them, and Burnplan works out each tank. The next flight starts with those levels. Optional gauge readings help you learn how your gauges read; they never change any calculation.
+
+If you weren't there to see each tank filled, switch to **Total only** and type the total gallons added. On a top-off or tabs fill, each tank is set to its target, and Burnplan compares the total with what it calculated the tanks needed. That difference, and its share of the calculated burn since the last fueling, shows how close your burn estimate is. It's for your information only: Burnplan never changes your cruise burn from it. With specific amounts, the total is only checked against what you asked for.
 
 ## Log
 

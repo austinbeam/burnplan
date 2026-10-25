@@ -112,6 +112,7 @@ A tank marked "done for this flight" (a `park` event) is left where it is. Rebui
 
 - Ground fills: top off (the default), specific amounts, or tips full with mains to tabs (18 gal).
 - Record the fill order and the **cumulative** pump reading after each tank; per-tank gallons are calculated from those. The POH fill order is part of the type config (`fillOrder`).
+- **Total only** (`mode: 'total'`, `totalAdded`, no `steps`): for a fill Austin didn't watch. Each tank is assumed to reach its target (top-off/tabs) or get what was asked (amounts); there are no per-tank pumped/diff numbers. `fuelingResult` returns `expectedTotal` / `totalDiff` for every fueling (per-tank ones too). On top-off/tabs that diff is shown with its % of the calculated burn of closed flights since the previous fueling, as calibration info only. **It must never change cruise gph, a tail override or any flight, and is never shown as a gph.** Specific-amounts fills don't calibrate (`calibrates: false`).
 - A fueling prefills the next flight's starting fuel.
 - Gauge readings (in flight and at fueling) are for calibration only and never change any calculation.
 
@@ -125,6 +126,8 @@ A flight (`state.flights[id]`) stores:
 - `plan` and `planHistory`.
 - `engineStart` and `takeoff` timestamps, `timerFrom`, `tz`, `status` (draft/active/closed), `shutdown`, `freezeAt`.
 - `events[]`.
+
+A fueling (`state.fuelings[id]`) stores `tail`, `at`, `tz`, `airport`, `request` (full/tabs/amounts), `amounts`, `before`, `mode` ('tanks' default, or 'total'), `startReading` + `steps` (per tank) or `totalAdded` (total only), gauges and a note. Fuelings are not flight events.
 
 Leg and switch tanks are tank ids, or `BOTH` on types with a BOTH selector (use `P.tanksOf` / `P.feedLevel`, not `levels[tank]`). Event types: `engine`, `takeoff`, `climb` {gph, until, initial}, `level`, `descent` {gph, until?}, `landing`, `switch` {tank, catchup, planned}, `check` {used, gph, setsBurn}, `burn` {gph, scope 'all'?}, `ete` {eteMin, fuelToDest, gph, gphSet, divert, altFuel}, `shutdown`, `reactivate`, `gauge` {readings, note, phase}, `note`, `park` / `unpark` {tank}.
 

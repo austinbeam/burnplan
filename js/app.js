@@ -4,7 +4,7 @@ import * as S from './store.js';
 import { loadGuide } from './guide.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v34'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v35'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -1667,7 +1667,7 @@ function newFuelDraft(tail) {
     id: null, tail, at: now(), tz: phoneTZ(), airport: '', request: 'full', amounts: {},
     before: Object.fromEntries(cfg.tanks.map((t) => [t.id, st ? Math.round(Math.max(0, st.levels[t.id]) * 10) / 10 : ''])),
     beforeLabel: st ? st.label : null,
-    startReading: '0', steps: cfg.fillOrder.map((id) => ({ tank: id, reading: '' })),
+    mode: 'tanks', totalAdded: '', startReading: '0', steps: cfg.fillOrder.map((id) => ({ tank: id, reading: '' })),
     gaugeBefore: {}, gaugeAfter: {}, note: ''
   };
 }
@@ -1676,6 +1676,28 @@ function fuelingCalc(d) {
   const cfg = cfgForTail(d.tail);
   const fu = { ...d, before: Object.fromEntries(Object.entries(d.before || {}).map(([k, v]) => [k, v === '' || v == null ? null : num(v)])), startReading: num(d.startReading) || 0 };
   return { cfg, res: P.fuelingResult(fu, cfg.tanks) };
+}
+
+// Calculated burn of this tail's closed flights between the fueling before this one and this one.
+// Used only to show the total diff as a share of the burn it measures; never turned into a rate.
+function burnSinceLastFueling(tail, at, excludeId = null) {
+  const prev = Math.max(0, ...fuelings().filter((x) => x.tail === tail && x.id !== excludeId && x.at < at).map((x) => x.at));
+  let gal = 0;
+  for (const f of Object.values(state.flights)) {
+    if (f.tail !== tail || f.status !== 'closed' || !f.shutdown || f.shutdown > at || f.shutdown <= prev) continue;
+    const sum = (o) => Object.values(o || {}).reduce((a, b) => a + (+b || 0), 0);
+    gal += sum(f.startLevels) - sum(P.estimate(f, f.cfg, f.shutdown).levels);
+  }
+  return gal;
+}
+// One line comparing the total added with what the calculated levels said was needed.
+function fuelTotalLine(x, res) {
+  if (res.totalDiff == null) return `<div class="mut small">Enter every tank's before level to compare the total with the burn estimate.</div>`;
+  const d = res.totalDiff, burn = burnSinceLastFueling(x.tail, x.at, x.id);
+  const pct = res.calibrates && burn >= 1 ? ` · ${d >= 0 ? '+' : ''}${Math.round((d / burn) * 100)}% of the ${f1(burn)} gal calculated burn since the last fueling` : '';
+  return `<div class="kv"><span>Expected</span><span class="v">${f1(res.expectedTotal)} gal</span></div>
+    <div class="kv" data-totaldiff><span>${res.calibrates ? 'Diff vs burn estimate' : 'Diff vs what you asked for'}</span><span class="v" style="color:${Math.abs(d) >= 1 ? 'var(--amber)' : 'inherit'}">${d >= 0 ? '+' : ''}${f1(d)} gal</span></div>
+    <div class="mut small">${res.calibrates ? `Positive = the airplane took more than calculated (the burn was under-estimated)${pct}. Shown for calibration only: cruise burn is never changed from this.` : 'Specific amounts say nothing about the burn estimate, so this fill is not used for calibration.'}</div>`;
 }
 
 function viewFuel() {
@@ -1698,23 +1720,28 @@ function viewFuel() {
     ${fuelCalCard(tail)}
     ${calibrationCard()}
     <div class="lbl" style="text-transform:uppercase;letter-spacing:.06em;font-size:11px;margin-bottom:-6px">Fuelings</div>
-    <div class="list">${list.length ? list.map((x) => { const r = P.fuelingResult(x, cfg.tanks); return `<a class="item" href="#fuel/${x.id}"><div><div class="t">${esc(REQ[x.request])}${x.airport ? ' · ' + esc(x.airport) : ''}</div><div class="s">${fmtDate(x.at, x.tz)} ${localHM(x.at, x.tz || phoneTZ())} · ${r.rows.filter((y) => y.filled).map((y) => `${y.tank} ${f1(y.pumped)}`).join(' · ')}</div></div><span class="mono">${f1(r.total)} gal</span></a>`; }).join('') : '<div class="card empty">No fuelings yet.</div>'}</div>
+    <div class="list">${list.length ? list.map((x) => { const r = P.fuelingResult(x, cfg.tanks); return `<a class="item" href="#fuel/${x.id}"><div><div class="t">${esc(REQ[x.request])}${x.airport ? ' · ' + esc(x.airport) : ''}</div><div class="s">${fmtDate(x.at, x.tz)} ${localHM(x.at, x.tz || phoneTZ())} · ${x.mode === 'total' ? `total only${r.totalDiff != null && r.calibrates ? ` · ${r.totalDiff >= 0 ? '+' : ''}${f1(r.totalDiff)} vs calc` : ''}` : r.rows.filter((y) => y.filled).map((y) => `${y.tank} ${f1(y.pumped)}`).join(' · ')}</div></div><span class="mono">${f1(r.total)} gal</span></a>`; }).join('') : '<div class="card empty">No fuelings yet.</div>'}</div>
   </div>`;
 }
 
 // How far the calculated leftovers were from what the pump said each tank needed (top-off and tabs fills).
 function fuelCalCard(tail) {
   const cfg = cfgForTail(tail);
-  const pts = [];
+  const pts = [], tot = [];
   for (const x of fuelings()) {
     if (x.tail !== tail || x.request === 'amounts') continue;
-    for (const r of P.fuelingResult(x, cfg.tanks).rows) if (r.filled && r.diff != null) pts.push(r);
+    const res = P.fuelingResult(x, cfg.tanks);
+    for (const r of res.rows) if (r.filled && r.diff != null) pts.push(r);
+    if (res.totalDiff != null) tot.push({ d: res.totalDiff, burn: burnSinceLastFueling(x.tail, x.at, x.id) });
   }
-  if (!pts.length) return '';
+  if (!pts.length && !tot.length) return '';
   const avg = (a) => a.reduce((p, q) => p + q, 0) / a.length;
+  const td = tot.length ? avg(tot.map((x) => x.d)) : 0, tb = tot.reduce((a, x) => a + x.burn, 0);
   return `<div class="card"><h2>Burn estimate vs the pump</h2>
     <div class="mut small">On top-off and tabs fills: gallons pumped minus what Burnplan calculated each tank needed. Positive = the tank had less than calculated (we under-estimated the burn from it).</div>
-    <div class="grid4">${cfg.tanks.map((t) => { const l = pts.filter((p) => p.tank === t.id).map((p) => p.diff); return `<div class="chip" style="padding:8px"><span class="k" style="color:${tankColor(cfg, t.id)}">${esc(t.id)}${l.length ? ` ·${l.length}` : ''}</span><span class="v" style="font-size:16px;color:${l.length && Math.abs(avg(l)) >= 1 ? 'var(--amber)' : 'inherit'}">${l.length ? `${avg(l) >= 0 ? '+' : ''}${f1(avg(l))}` : '—'}</span></div>`; }).join('')}</div></div>`;
+    ${tot.length ? `<div class="kv total" data-caltotal><span>Whole airplane · ${tot.length} fill${tot.length > 1 ? 's' : ''}</span><span class="v" style="color:${Math.abs(td) >= 1 ? 'var(--amber)' : 'inherit'}">${td >= 0 ? '+' : ''}${f1(td)} gal avg${tb >= 1 ? ` · ${(td * tot.length) / tb >= 0 ? '+' : ''}${Math.round(((td * tot.length) / tb) * 100)}%` : ''}</span></div>` : ''}
+    ${pts.length ? `<div class="grid4">${cfg.tanks.map((t) => { const l = pts.filter((p) => p.tank === t.id).map((p) => p.diff); return `<div class="chip" style="padding:8px"><span class="k" style="color:${tankColor(cfg, t.id)}">${esc(t.id)}${l.length ? ` ·${l.length}` : ''}</span><span class="v" style="font-size:16px;color:${l.length && Math.abs(avg(l)) >= 1 ? 'var(--amber)' : 'inherit'}">${l.length ? `${avg(l) >= 0 ? '+' : ''}${f1(avg(l))}` : '—'}</span></div>`; }).join('')}</div>` : ''}
+    <div class="mut small">For information only. Burnplan never changes your cruise burn from these numbers; set it yourself if you want to.</div></div>`;
 }
 
 function viewFuelingEdit(d) {
@@ -1743,7 +1770,24 @@ function viewFuelingEdit(d) {
       </div>
       <div class="mut small">${d.beforeLabel ? `Before levels from ${esc(d.beforeLabel)}. Change them if you know better.` : 'Enter what you believe was in each tank, if you know.'} Gauge readings take gallons, 3/4, 60%, F or E.</div>
     </div>
-    <div class="card"><h2>Fill, in order</h2>
+    <div class="field"><span class="lbl">What you know</span>
+      <div class="seg" role="group" aria-label="Fuel added">${[['tanks', 'Per tank'], ['total', 'Total only']].map(([k, l]) => `<button class="${(d.mode || 'tanks') === k ? 'on' : ''}" aria-pressed="${(d.mode || 'tanks') === k}" data-act="fuMode" data-v="${k}">${l}</button>`).join('')}</div>
+      ${d.mode === 'total' ? `<div class="mut small">For when you didn't see each tank filled. Each tank is taken as ${d.request === 'amounts' ? 'getting what you asked for' : 'reaching its target'}.</div>` : ''}
+    </div>
+    ${d.mode === 'total' ? fuelFillTotal(d, cfg, res) : fuelFillTanks(d, cfg, res)}
+    <div class="card"><h2>Gauges after (optional)</h2>
+      <div class="grid4">${cfg.tanks.map((t) => `<div class="field"><label for="fga-${t.id}" style="color:${tankColor(cfg, t.id)}">${esc(t.id)}</label>${inp('fga-' + t.id, `data-fga="${t.id}"`, d.gaugeAfter?.[t.id], 'F')}</div>`).join('')}</div>
+      <div class="mut small">Readings right after a top-off are the best calibration points: the true level is known.</div>
+    </div>
+    <div class="field"><label for="fu-note">Note</label><input id="fu-note" data-fu="note" value="${esc(d.note)}"></div>
+    <div class="row"><button class="btn danger grow" data-act="fuDiscard">${d.id ? 'Cancel' : 'Discard'}</button><button class="btn primary grow" data-act="fuSave">Save fueling</button></div>
+    <div class="mut small">Saving sets this aircraft's starting fuel for the next flight to the After column.</div>
+  </div>`;
+}
+
+// Fill card for a fueling with per-tank pump readings.
+function fuelFillTanks(d, cfg, res) {
+  return `<div class="card"><h2>Fill, in order</h2>
       <div class="field"><label for="fu-start">Pump reading at start</label><input id="fu-start" class="mono" data-fu="startReading" value="${esc(d.startReading)}" inputmode="decimal"></div>
       ${d.steps.map((st, i) => `<div class="row" style="gap:8px;align-items:flex-end">
         <span class="mut small" style="width:16px;padding-bottom:14px">${i + 1}</span>
@@ -1758,30 +1802,54 @@ function viewFuelingEdit(d) {
         <div class="evrow head" style="grid-template-columns:0.6fr 1fr 1fr 1fr 1fr;padding:0"><span>Tank</span><span>Pumped</span><span>Expected</span><span>Diff</span><span>After</span></div>
         ${res.rows.map((r) => `<div class="evrow" style="grid-template-columns:0.6fr 1fr 1fr 1fr 1fr;padding:0;border:none;min-height:36px"><span style="color:${tankColor(cfg, r.tank)};font-family:var(--sans);font-weight:600">${esc(r.tank)}</span><span>${r.filled ? f1(r.pumped) : '—'}</span><span class="mut">${r.expected != null && r.filled ? f1(r.expected) : '—'}</span><span style="color:${r.diff != null && Math.abs(r.diff) >= 1 ? 'var(--amber)' : 'inherit'}">${r.diff != null ? `${r.diff >= 0 ? '+' : ''}${f1(r.diff)}` : '—'}</span><span>${r.after != null ? f1(r.after) : '—'}${r.known ? '' : r.after != null ? '<span class="dim">*</span>' : ''}</span></div>`).join('')}
         <div class="kv total" style="margin-top:6px"><span>Total pumped</span><span class="v">${f1(res.total)} gal</span></div>
+        ${res.total > 0 ? fuelTotalLine(d, res) : ''}
       </div>
       <div class="mut small">Expected = what Burnplan calculated each tank needed${d.request === 'amounts' ? ' (the amount you asked for)' : ' to reach the target'}. Diff = pumped − expected. ${d.request === 'amounts' ? '* After = before + pumped, since there is no known full mark.' : '* Not filled, so unchanged.'}</div>
+    </div>`;
+}
+
+// Fill card for a fueling where only the total added is known.
+function fuelFillTotal(d, cfg, res) {
+  return `<div class="card"><h2>Fuel added</h2>
+      <div class="field"><label for="fu-total">Total gallons added</label><input id="fu-total" class="mono key" data-fu="totalAdded" value="${esc(d.totalAdded ?? '')}" placeholder="gal" inputmode="decimal"></div>
     </div>
-    <div class="card"><h2>Gauges after (optional)</h2>
-      <div class="grid4">${cfg.tanks.map((t) => `<div class="field"><label for="fga-${t.id}" style="color:${tankColor(cfg, t.id)}">${esc(t.id)}</label>${inp('fga-' + t.id, `data-fga="${t.id}"`, d.gaugeAfter?.[t.id], 'F')}</div>`).join('')}</div>
-      <div class="mut small">Readings right after a top-off are the best calibration points: the true level is known.</div>
-    </div>
-    <div class="field"><label for="fu-note">Note</label><input id="fu-note" data-fu="note" value="${esc(d.note)}"></div>
-    <div class="row"><button class="btn danger grow" data-act="fuDiscard">${d.id ? 'Cancel' : 'Discard'}</button><button class="btn primary grow" data-act="fuSave">Save fueling</button></div>
-    <div class="mut small">Saving sets this aircraft's starting fuel for the next flight to the After column.</div>
-  </div>`;
+    <div class="card"><h2>Result</h2>
+      <div class="legs" style="border:none;overflow-x:auto">
+        <div class="evrow head" style="grid-template-columns:0.6fr 1fr 1fr;padding:0"><span>Tank</span><span>Expected</span><span>After</span></div>
+        ${res.rows.map((r) => `<div class="evrow" style="grid-template-columns:0.6fr 1fr 1fr;padding:0;border:none;min-height:36px"><span style="color:${tankColor(cfg, r.tank)};font-family:var(--sans);font-weight:600">${esc(r.tank)}</span><span class="mut">${r.expected != null ? f1(r.expected) : '—'}</span><span>${r.after != null ? f1(r.after) : '—'}${r.known ? '' : r.after != null ? '<span class="dim">*</span>' : ''}</span></div>`).join('')}
+        <div class="kv total" style="margin-top:6px"><span>Total added</span><span class="v">${d.totalAdded !== '' && isFinite(num(d.totalAdded)) ? f1(num(d.totalAdded)) + ' gal' : '—'}</span></div>
+        ${d.totalAdded !== '' && isFinite(num(d.totalAdded)) ? fuelTotalLine(d, res) : ''}
+      </div>
+      ${d.request === 'amounts' ? '<div class="mut small">* After = before + what you asked for, since the split is unknown.</div>' : ''}
+    </div>`;
 }
 
 function viewFuelingDetail(x) {
   const cfg = cfgForTail(x.tail);
   const r = P.fuelingResult(x, cfg.tanks);
   const g = (o, id) => { const v = o?.[id]; if (v == null || v === '') return '—'; const gal = parseGauge(v, cfg.tanks.find((t) => t.id === id)?.capacity); return gal == null || !isFinite(gal) ? esc(String(v)) : f1(gal); };
-  return `<div class="top"><div><div class="kicker"><a href="#fuel">Fuel</a> · ${esc(x.tail)} · ${fmtDate(x.at, x.tz)} ${localHM(x.at, x.tz || phoneTZ())}</div><h1>${esc(REQ[x.request])}</h1></div></div>
+  const head = `<div class="top"><div><div class="kicker"><a href="#fuel">Fuel</a> · ${esc(x.tail)} · ${fmtDate(x.at, x.tz)} ${localHM(x.at, x.tz || phoneTZ())}</div><h1>${esc(REQ[x.request])}</h1></div></div>`;
+  const btns = `<div class="row"><button class="btn grow" data-act="fuEdit" data-id="${x.id}">Edit</button><button class="btn danger grow" data-act="fuDelete" data-id="${x.id}">Delete</button></div>`;
+  if (x.mode === 'total') return `${head}
+  <div class="stack">
+    <div class="mut">Total only${x.airport ? ` · ${esc(x.airport)}` : ''}</div>
+    <div class="legs" style="padding:8px 12px;overflow-x:auto">
+      <div class="evrow head" style="grid-template-columns:0.6fr repeat(5, 1fr);padding:0"><span>Tank</span><span>Before</span><span>Gauge</span><span>Expected</span><span>After</span><span>Gauge</span></div>
+      ${r.rows.map((y) => `<div class="evrow" style="grid-template-columns:0.6fr repeat(5, 1fr);padding:0;min-height:36px"><span style="color:${tankColor(cfg, y.tank)};font-family:var(--sans);font-weight:600">${esc(y.tank)}</span><span>${y.before != null ? f1(y.before) : '—'}</span><span class="mut">${g(x.gaugeBefore, y.tank)}</span><span class="mut">${y.expected != null ? f1(y.expected) : '—'}</span><span>${y.after != null ? f1(y.after) : '—'}</span><span class="mut">${g(x.gaugeAfter, y.tank)}</span></div>`).join('')}
+      <div class="kv total"><span>Total added</span><span class="v">${f1(r.total)} gal</span></div>
+      ${fuelTotalLine(x, r)}
+    </div>
+    ${x.note ? `<div class="mut small">${esc(x.note)}</div>` : ''}
+    ${btns}
+  </div>`;
+  return `${head}
   <div class="stack">
     ${x.airport ? `<div class="mut">${esc(x.airport)}</div>` : ''}
     <div class="legs" style="padding:8px 12px;overflow-x:auto">
       <div class="evrow head" style="grid-template-columns:0.6fr repeat(6, 1fr);padding:0"><span>Tank</span><span>Before</span><span>Gauge</span><span>Pumped</span><span>Diff</span><span>After</span><span>Gauge</span></div>
       ${r.rows.map((y) => `<div class="evrow" style="grid-template-columns:0.6fr repeat(6, 1fr);padding:0;min-height:36px"><span style="color:${tankColor(cfg, y.tank)};font-family:var(--sans);font-weight:600">${esc(y.tank)}</span><span>${y.before != null ? f1(y.before) : '—'}</span><span class="mut">${g(x.gaugeBefore, y.tank)}</span><span>${y.filled ? f1(y.pumped) : '—'}</span><span style="color:${y.diff != null && Math.abs(y.diff) >= 1 ? 'var(--amber)' : 'inherit'}">${y.diff != null ? `${y.diff >= 0 ? '+' : ''}${f1(y.diff)}` : '—'}</span><span>${y.after != null ? f1(y.after) : '—'}</span><span class="mut">${g(x.gaugeAfter, y.tank)}</span></div>`).join('')}
       <div class="kv total"><span>Total pumped</span><span class="v">${f1(r.total)} gal</span></div>
+      ${fuelTotalLine(x, r)}
     </div>
     <div class="mut small">Fill order: ${x.steps.map((s, i) => `${s.tank} ${r.stepGal[i] != null ? f1(r.stepGal[i]) : '—'}`).join(' → ')}${x.note ? ` · ${esc(x.note)}` : ''}</div>
     <div class="row"><button class="btn grow" data-act="fuEdit" data-id="${x.id}">Edit</button><button class="btn danger grow" data-act="fuDelete" data-id="${x.id}">Delete</button></div>
@@ -2265,6 +2333,7 @@ const actions = {
   replayEnd(el) { ui.replayAt = null; ui.replayFid = el.dataset.fid; render(); },
   newFueling(el) { state.fuelDraft = newFuelDraft(el.dataset.tail); persist(); go('fuel', 'edit'); },
   fuReq(el) { state.fuelDraft.request = el.dataset.v; persist(); render(); },
+  fuMode(el) { state.fuelDraft.mode = el.dataset.v; persist(); render(); },
   fuAddStep() {
     const d = state.fuelDraft, cfg = cfgForTail(d.tail);
     const used = new Set(d.steps.map((x) => x.tank));
@@ -2279,7 +2348,9 @@ const actions = {
   fuSave() {
     const d = state.fuelDraft;
     const { res } = fuelingCalc(d);
-    if (!d.steps.some((x) => x.reading !== '' && isFinite(num(x.reading)))) return toast('Enter the pump reading for at least one tank');
+    const total = d.mode === 'total';
+    if (total && !(num(d.totalAdded) > 0)) return toast('Enter the total gallons added');
+    if (!total && !d.steps.some((x) => x.reading !== '' && isFinite(num(x.reading)))) return toast('Enter the pump reading for at least one tank');
     const bad = res.stepGal.findIndex((g, i) => g != null && g < 0);
     if (bad >= 0) return toast(`Step ${bad + 1}: pump reading is lower than the one before`);
     const id = d.id || uid();
@@ -2289,8 +2360,9 @@ const actions = {
       id, tail: d.tail, at: d.at, tz: d.tz, airport: (d.airport || '').toUpperCase(), request: d.request,
       amounts: d.request === 'amounts' ? Object.fromEntries(Object.entries(clean(d.amounts)).map(([k, v]) => [k, num(v)])) : {},
       before: Object.fromEntries(Object.entries(d.before || {}).map(([k, v]) => [k, v === '' || v == null ? null : num(v)])),
-      startReading: num(d.startReading) || 0,
-      steps: d.steps.filter((x) => x.reading !== '' && isFinite(num(x.reading))).map((x) => ({ tank: x.tank, reading: num(x.reading) })),
+      mode: total ? 'total' : 'tanks', totalAdded: total ? num(d.totalAdded) : null,
+      startReading: total ? 0 : num(d.startReading) || 0,
+      steps: total ? [] : d.steps.filter((x) => x.reading !== '' && isFinite(num(x.reading))).map((x) => ({ tank: x.tank, reading: num(x.reading) })),
       gaugeBefore: clean(d.gaugeBefore), gaugeAfter: clean(d.gaugeAfter), note: (d.note || '').trim() || null, savedAt: now()
     };
     state.fuelDraft = null;
@@ -2300,7 +2372,9 @@ const actions = {
   fuEdit(el) {
     const x = state.fuelings[el.dataset.id];
     const s = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, v == null ? '' : String(v)]));
-    state.fuelDraft = { ...x, before: s(x.before), amounts: s(x.amounts), startReading: String(x.startReading), steps: x.steps.map((y) => ({ tank: y.tank, reading: String(y.reading) })), gaugeBefore: s(x.gaugeBefore), gaugeAfter: s(x.gaugeAfter), note: x.note || '', beforeLabel: null };
+    const cfg = cfgForTail(x.tail);
+    const steps = x.mode === 'total' ? cfg.fillOrder.map((id) => ({ tank: id, reading: '' })) : x.steps;
+    state.fuelDraft = { ...x, mode: x.mode || 'tanks', totalAdded: x.totalAdded == null ? '' : String(x.totalAdded), before: s(x.before), amounts: s(x.amounts), startReading: String(x.startReading), steps: steps.map((y) => ({ tank: y.tank, reading: String(y.reading) })), gaugeBefore: s(x.gaugeBefore), gaugeAfter: s(x.gaugeAfter), note: x.note || '', beforeLabel: null };
     persist(); go('fuel', 'edit');
   },
   fuDelete(el) { const id = el.dataset.id; ask('Delete this fueling?', 'Delete', () => { delete state.fuelings[id]; persist(); go('fuel'); }); },

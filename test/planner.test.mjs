@@ -295,6 +295,39 @@ test('fueling: per-tank gallons from running pump totals, compared with the calc
   assert.equal(a.rows.find((x) => x.tank === 'LT').after, 4);
 });
 
+test('fueling, total only: tanks reach their targets and the total is compared with the calculated need', () => {
+  const tanks = [
+    { id: 'LT', capacity: 17 }, { id: 'LM', capacity: 25, tabGal: 18 }, { id: 'RM', capacity: 25, tabGal: 18 }, { id: 'RT', capacity: 17 }
+  ];
+  const before = { LT: 4, LM: 6, RM: 5, RT: 17 };
+  const r = P.fuelingResult({ request: 'full', mode: 'total', totalAdded: 61, before, steps: [{ tank: 'LT', reading: 99 }] }, tanks);
+  const by = Object.fromEntries(r.rows.map((x) => [x.tank, x]));
+  assert.equal(r.total, 61, 'total comes from totalAdded, pump steps ignored');
+  assert.deepEqual(r.stepGal, []);
+  assert.equal(by.LT.after, 17); assert.equal(by.LM.after, 25); assert.equal(by.RT.after, 17);
+  assert.equal(by.RT.filled, false, 'already full, nothing needed');
+  assert.equal(by.LM.pumped, null); assert.equal(by.LM.diff, null);
+  assert.equal(r.expectedTotal, 13 + 19 + 20 + 0);
+  assert.equal(r.totalDiff, 61 - 52);
+  assert.equal(r.calibrates, true);
+  // tabs: mains to tabs, tips full
+  const t = P.fuelingResult({ request: 'tabs', mode: 'total', totalAdded: 30, before }, tanks);
+  assert.equal(t.rows.find((x) => x.tank === 'LM').after, 18);
+  assert.equal(t.expectedTotal, 13 + 12 + 13 + 0);
+  // an unknown before level means no comparison
+  const u = P.fuelingResult({ request: 'full', mode: 'total', totalAdded: 50, before: { ...before, LM: null } }, tanks);
+  assert.equal(u.expectedTotal, null); assert.equal(u.totalDiff, null);
+  assert.equal(u.rows.find((x) => x.tank === 'LM').after, 25);
+  // specific amounts: after = before + asked, and it does not calibrate the burn
+  const a = P.fuelingResult({ request: 'amounts', mode: 'total', totalAdded: 21, amounts: { LM: 10, RM: 10 }, before }, tanks);
+  assert.equal(a.rows.find((x) => x.tank === 'LM').after, 16);
+  assert.equal(a.rows.find((x) => x.tank === 'LT').after, 4);
+  assert.equal(a.totalDiff, 1); assert.equal(a.calibrates, false);
+  // per-tank fills get the whole-airplane comparison too
+  const pt = P.fuelingResult({ request: 'full', before, startReading: 0, steps: [{ tank: 'LT', reading: 13.5 }, { tank: 'LM', reading: 33 }, { tank: 'RM', reading: 53 }] }, tanks);
+  assert.equal(pt.expectedTotal, 52); assert.ok(Math.abs(pt.totalDiff - 1) < 1e-9);
+});
+
 test('a tank marked done is left where it is (screenshot scenario)', () => {
   const cfg = P.resolveConfig(type);
   // ~70 min left at 14.8 gph, on LM, RM pulled at 5.5 calc

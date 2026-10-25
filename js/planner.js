@@ -624,13 +624,17 @@ export function parseClock(str, refMs) {
 
 // ---- fueling -------------------------------------------------------------
 // fueling: { request: 'full' | 'tabs' | 'amounts', amounts: {tank: gal}, startReading, steps: [{tank, reading}],
-//            before: {tank: gal} (calculated levels before fueling) }
+//            before: {tank: gal} (calculated levels before fueling),
+//            mode: 'tanks' (default) | 'total', totalAdded (gal, total mode only) }
 // Pump readings are the running total shown on the pump after each tank is done.
+// Total mode is for a fill the pilot didn't watch: only the total is known, so there are no
+// per-tank pumped/diff figures. Each tank is assumed to have reached its target (or got what was asked).
 export function fuelingResult(fueling, tanks) {
+  const total = fueling.mode === 'total';
   const pumped = Object.fromEntries(tanks.map((t) => [t.id, 0]));
   let prev = +fueling.startReading || 0;
   const stepGal = [];
-  for (const s of fueling.steps || []) {
+  for (const s of total ? [] : fueling.steps || []) {
     const r = +s.reading;
     if (!isFinite(r) || s.reading === '' || s.reading == null) { stepGal.push(null); continue; }
     const g = r - prev;
@@ -649,12 +653,22 @@ export function fuelingResult(fueling, tanks) {
       after = target;
     } else {
       expected = +fueling.amounts?.[t.id] || 0;
-      after = before != null ? Math.min(t.capacity, before + pumped[t.id]) : null;
+      after = before != null ? Math.min(t.capacity, before + (total ? expected : pumped[t.id])) : null;
+    }
+    if (total) {
+      const filled = target != null ? before == null || before < target : expected > 0;
+      if (target != null && !filled) after = before;
+      return { tank: t.id, before, target, expected: filled ? expected : 0, pumped: null, after, filled, diff: null, known: target != null };
     }
     const filled = (fueling.steps || []).some((s) => s.tank === t.id);
     // A tank not filled at all under top-off/tabs keeps what it had (unless it was already at target).
     if (target != null && !filled) after = before != null ? before : null;
     return { tank: t.id, before, target, expected: filled || target == null ? expected : 0, pumped: pumped[t.id], after, filled, diff: filled && expected != null ? pumped[t.id] - expected : null, known: target != null && filled };
   });
-  return { rows, stepGal, total: prev - (+fueling.startReading || 0) };
+  const added = total ? (isFinite(+fueling.totalAdded) ? +fueling.totalAdded : 0) : prev - (+fueling.startReading || 0);
+  // Whole-airplane comparison: added minus what the calculated levels said was needed. On top-off/tabs
+  // this measures the burn estimate; on specific amounts it only says whether the fueler matched the ask.
+  const exp = rows.map((r) => r.expected);
+  const expectedTotal = exp.some((x) => x == null) ? null : exp.reduce((a, b) => a + b, 0);
+  return { rows, stepGal, total: added, expectedTotal, totalDiff: expectedTotal != null ? added - expectedTotal : null, calibrates: fueling.request !== 'amounts' };
 }
