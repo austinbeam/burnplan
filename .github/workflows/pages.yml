@@ -30,7 +30,8 @@ jobs:
       - name: Stage site
         run: |
           mkdir -p _site
-          cp -r index.html app.css manifest.webmanifest sw.js js icons _site/
+          cp -r index.html app.css manifest.webmanifest sw.js js icons README.md _site/
+          mkdir -p _site/docs && cp -r docs/img _site/docs/
           BUILD="${GITHUB_SHA::7} · $(date -u +'%b %-d %H:%MZ')"
           sed -i "s/__BUILD__/${BUILD}/" _site/js/app.js
           # every deploy gets its own cache name so installed apps pick it up

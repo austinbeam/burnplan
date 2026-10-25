@@ -226,3 +226,24 @@ details.explain p b { color: var(--tx); }
 .pv.cur b { color: var(--amber); }
 .pv .seq { line-height: 1.6; }
 .buildinfo { text-align: center; font-size: 12px; color: var(--dim); padding: 8px 0 4px; }
+
+/* Guide (README rendered in the app) */
+.guide { line-height: 1.5; padding-bottom: 24px; }
+.guide h1 { font-size: 22px; margin: 4px 0 8px; }
+.guide h2 { font-size: 18px; margin: 22px 0 6px; }
+.guide h3 { font-size: 15px; margin: 16px 0 4px; }
+.guide p, .guide ul, .guide ol { margin: 6px 0; }
+.guide ul, .guide ol { padding-left: 22px; }
+.guide li { margin: 3px 0; }
+.guide a { color: var(--blue); }
+.guide code { font-family: var(--mono); font-size: .9em; background: var(--s1); padding: 1px 4px; border-radius: 4px; }
+.guide pre { background: var(--s1); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; }
+.guide pre code { background: none; padding: 0; }
+.guide .tablewrap { overflow-x: auto; margin: 8px 0; }
+.guide table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.guide th, .guide td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+.guide table.shots th { font-weight: 500; color: var(--mut); font-size: 12px; text-align: center; }
+.guide table.shots td { padding: 4px; border: 0; }
+.guide img { max-width: 100%; display: block; border-radius: 8px; border: 1px solid var(--line); }
+.guide table.shots thead { display: none; }
+.guide table.shots tbody tr { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

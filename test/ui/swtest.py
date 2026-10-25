@@ -3,7 +3,7 @@ import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); 
 import subprocess, time, re, shutil, tempfile
 from playwright.sync_api import sync_playwright
 SITE = tempfile.mkdtemp(prefix='burnplan-sw-')
-for f in ['index.html', 'app.css', 'manifest.webmanifest', 'sw.js', 'js', 'icons']:
+for f in ['index.html', 'app.css', 'manifest.webmanifest', 'sw.js', 'js', 'icons', 'README.md', 'docs']:  # same files the Pages deploy stages
     (shutil.copytree if os.path.isdir(os.path.join(ROOT, f)) else shutil.copy)(os.path.join(ROOT, f), os.path.join(SITE, f))
 def setver(v):
     for f, pat, rep in [('sw.js', r"const VERSION = '[^']*'", f"const VERSION = 'burnplan-{v}'"), ('js/app.js', r"APP_VERSION = '[^']*'", f"APP_VERSION = '{v}'")]:

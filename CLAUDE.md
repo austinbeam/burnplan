@@ -1,6 +1,6 @@
 # Burnplan
 
-Fuel tank switching planner and in-flight tracker. Built for Austin's Piper PA-32 N12345 (4 tanks: LT 17, LM 25, RM 25, RT 17 usable gal), and usable by anyone. The app is live at https://austinbeam.github.io/burnplan/. Austin mostly uses it on Android, in flight, often one-handed. Keep it fast to tap and readable at a glance.
+Fuel tank switching planner and in-flight tracker. Built for Austin's Piper PA-32 (4 tanks: LT 17, LM 25, RM 25, RT 17 usable gal), and usable by anyone. The app is live at https://austinbeam.github.io/burnplan/. Austin mostly uses it on Android, in flight, often one-handed. Keep it fast to tap and readable at a glance.
 
 ## Stack and layout
 
@@ -11,8 +11,12 @@ Fuel tank switching planner and in-flight tracker. Built for Austin's Piper PA-3
 - `js/store.js`: localStorage under the key `burnplan.v1`. Also handles backup import and merge.
 - `js/app.js`: all UI (views, sheets, actions, field handlers, alerts, ticker). It is large; grep for `function viewX` / `function sheetX` / action names.
 - `test/planner.test.mjs` (node --test) and `test/ui/*.py` (Playwright click-throughs).
+- `README.md` is also the in-app **Guide** (`#guide`, linked from the Plan/setup header). `js/guide.js` renders a small Markdown subset (headings, lists, tables, code, bold/italic, links, images) and stops at `## For developers`. The README, `js/guide.js` and `docs/img/*.png` are in the service worker's `FILES` and the Pages staging step, so the guide works offline. Keep README Markdown inside that subset, and keep user-facing sections above `## For developers`.
+- `docs/shots.py` regenerates the README screenshots from sample data (tail `N12345`, KAAA → KBBB). Rerun it when a pictured screen changes.
 
 **User data never leaves the device.** No server, no analytics. Export and import of JSON files is the only way data moves.
+
+**This repo is public: no real tail numbers or personal identifiers anywhere.** That covers code, tests, fixtures, comments, docs, screenshots and commit messages. Use the sample tail `N12345` in tests and docs. Never write Austin's actual registration. If one slips in, scrub it from history too (`git filter-repo --replace-text` plus a force-push), not just from the tip.
 
 ## Deploying
 
@@ -45,7 +49,7 @@ On every user-visible change, bump **both** `APP_VERSION` in `js/app.js` and `VE
 
 ### Built-in types
 
-- `pa32` is Austin's airplane (N12345). Don't change its id or values when touching other types.
+- `pa32` is Austin's airplane. Don't change its id or values when touching other types.
 - The other built-ins (Cessna 172/182/206H/210, PA-28 Warrior/Archer/Arrow, Saratoga, A36, SR22, M20J) are made by `twoTank()` from typical POH values Austin approved on 2026-10-25. They are typical numbers, not checked against each POH: imbalance limits are conventions (except the SR22's 10 gal), and the Saratoga and A36 tab levels were not verified. Floor is 4 gal hard and reserve 60 min on all of them. Finish side is unset (`finishSide: null`), and the minimum leg is 30 min.
 - Adding a tail asks for the cruise gph, prefilled with the type's number. If it differs, it's saved as the tail override `burn.cruise`. This number sets the reserve and is the planning fallback when ForeFlight fuel is blank. It is never applied in flight.
 - Settings → Aircraft types has **Request an aircraft type**, which opens a prefilled GitHub issue form. It carries only the app version, never any flight or tail data.

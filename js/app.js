@@ -1,9 +1,10 @@
 import { BUILTIN_TYPES } from './types.js';
 import * as P from './planner.js';
 import * as S from './store.js';
+import { loadGuide } from './guide.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v32'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v33'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -392,26 +393,40 @@ function go(route, sub = null) {
 }
 function readHash() {
   const [r, s] = location.hash.replace(/^#/, '').split('/');
-  ui.route = ['setup', 'plan', 'fly', 'fuel', 'log', 'aircraft'].includes(r) ? r : (activeFlight()?.status === 'active' ? 'fly' : 'plan');
+  ui.route = ['setup', 'plan', 'fly', 'fuel', 'log', 'aircraft', 'guide'].includes(r) ? r : (activeFlight()?.status === 'active' ? 'fly' : 'plan');
   ui.sub = s || null;
 }
 
 function renderTabs() {
   const tabs = [['plan', 'Plan'], ['fly', 'Fly'], ['fuel', 'Fuel'], ['log', 'Log'], ['aircraft', 'Settings']];
-  const on = ui.route === 'setup' ? 'plan' : ui.route;
+  const on = ui.route === 'setup' || ui.route === 'guide' ? 'plan' : ui.route;
   $('#tabs').innerHTML = tabs.map(([r, l]) => `<a href="#${r}" class="${on === r ? 'on' : ''}">${l}</a>`).join('');
 }
 
 function render() {
   renderTabs();
-  const v = { setup: viewSetup, plan: viewPlan, fly: viewFly, fuel: viewFuel, log: viewLog, aircraft: viewAircraft }[ui.route];
+  const v = { setup: viewSetup, plan: viewPlan, fly: viewFly, fuel: viewFuel, log: viewLog, aircraft: viewAircraft, guide: viewGuide }[ui.route];
   $('#app').innerHTML = v();
   if (ui.route === 'fly') renderFlyLive();
   if (ui.route === 'setup') renderSetupCalc();
+  if (ui.route === 'guide') fillGuide();
   renderSheet();
   renderAlert();
   const f = activeFlight();
   keepAwake(!!(f && f.status === 'active' && ui.route === 'fly'));
+}
+
+// =====================================================================
+// GUIDE (README.md, shown in the app and cached for offline)
+// =====================================================================
+const GUIDE_BTN = '<a class="btn sm" href="#guide">Guide</a>';
+function viewGuide() {
+  return `<div class="top"><div><div class="kicker"><a href="#plan">Plan</a> · Guide</div><h1>How Burnplan works</h1></div></div>
+  <div class="guide" id="guideBody"><div class="mut">Loading…</div></div>`;
+}
+function fillGuide() {
+  loadGuide().then((html) => { const el = $('#guideBody'); if (el) el.innerHTML = html; })
+    .catch(() => { const el = $('#guideBody'); if (el) el.innerHTML = '<div class="card empty">The guide isn\'t available offline yet. Open the app once with a connection.</div>'; });
 }
 
 // =====================================================================
@@ -482,7 +497,7 @@ function viewSetup() {
       <a class="btn primary" href="#fly">Go to Fly</a></div></div>`;
   }
   if (!Object.keys(state.tails).length) {
-    return `<div class="top"><div><div class="kicker">Welcome to ${APP_NAME}</div><h1>Add your aircraft</h1></div></div>
+    return `<div class="top"><div><div class="kicker">Welcome to ${APP_NAME}</div><h1>Add your aircraft</h1></div>${GUIDE_BTN}</div>
       <div class="stack"><div class="card"><div class="mut small">Pick the aircraft type and enter the tail number. Tank layout, burn profiles and rules come from the type; you can override any of them for this tail later.</div>
       ${tailForm()}</div></div>`;
   }
@@ -491,7 +506,7 @@ function viewSetup() {
   if (!state.tails[d.tail]) d.tail = Object.keys(state.tails)[0];
   const cfg = cfgForTail(d.tail);
   return `<div class="top"><div><div class="kicker">${f ? 'Editing planned flight' : 'New flight'}</div><h1>Flight setup</h1></div>
-    ${f ? `<button class="btn sm danger" data-act="discardDraft">Discard</button>` : ''}</div>
+    <div class="stack" style="gap:6px;align-items:flex-end">${GUIDE_BTN}${f ? `<button class="btn sm danger" data-act="discardDraft">Discard</button>` : ''}</div></div>
   <div class="stack">
     <div class="grid2">
       <div class="field span2"><label for="s-tail">Aircraft</label>
@@ -672,7 +687,7 @@ function viewPlan() {
   const offPlan = !!(planAtNow && estNow && planAtNow.tank !== estNow.active);
 
   return `<div class="top"><div><div class="kicker">Plan · ${esc(f.tail)}</div><h1>${flightTitle(f)}</h1></div>
-    <div class="stack" style="gap:6px;align-items:flex-end"><span class="badge ${p.source === 'edited' ? 'amber' : ''}">${p.source === 'edited' ? 'Edited' : p.source === 'rebuilt' ? 'Rebuilt' : 'Generated'}</span>${f.status === 'draft' ? '<a class="btn sm" href="#setup">Edit setup</a>' : ''}</div></div>
+    <div class="stack" style="gap:6px;align-items:flex-end"><span class="badge ${p.source === 'edited' ? 'amber' : ''}">${p.source === 'edited' ? 'Edited' : p.source === 'rebuilt' ? 'Rebuilt' : 'Generated'}</span>${f.status === 'draft' ? '<a class="btn sm" href="#setup">Edit setup</a>' : ''}${GUIDE_BTN}</div></div>
   <div class="stack">
     <div class="chips">
       <div class="chip"><span class="k">Burn ${p.startMin > 0 ? 'remaining' : ''}</span><span class="v">${f1(P.fuelBetween(p.segs, p.startMin, p.endMin))}</span></div>
