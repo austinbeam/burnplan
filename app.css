@@ -190,3 +190,11 @@ button.gauge:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px
 .legrow.past .onnow { color: var(--amber); font-family: var(--sans); font-weight: 600; }
 .btn:active, .tankpick button:active, .seg button:active, .iconbtn:active { transform: scale(0.97); filter: brightness(1.15); }
 .btn, .tankpick button { transition: transform .06s ease, filter .06s ease; }
+.livedot { display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 10px; font-size: 13px; font-weight: 600; color: #4CC79F; white-space: nowrap; }
+.livedot .dot { width: 8px; height: 8px; border-radius: 50%; background: #4CC79F; box-shadow: 0 0 0 0 rgba(76,199,159,.6); animation: livepulse 2s infinite; }
+@keyframes livepulse { 0% { box-shadow: 0 0 0 0 rgba(76,199,159,.6); } 70% { box-shadow: 0 0 0 7px rgba(76,199,159,0); } 100% { box-shadow: 0 0 0 0 rgba(76,199,159,0); } }
+@media (prefers-reduced-motion: reduce) { .livedot .dot { animation: none; } }
+.btn.backlive { background: var(--amber); border-color: var(--amber); color: #14171C; font-weight: 600; white-space: nowrap; }
+.card.viewing { border-color: var(--amber); }
+.timebox { flex-wrap: wrap; }
+.timebox input { min-width: 96px; }

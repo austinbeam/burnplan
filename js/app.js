@@ -231,7 +231,7 @@ async function keepAwake(on) {
 
 function checkAlerts() {
   const f = activeFlight();
-  if (!f || f.status !== 'active' || ui.viewTime) return;
+  if (!f || f.status !== 'active') return;
   const t = now();
   const est = P.estimate(f, f.cfg, t);
   const legs = planAbs(f);
@@ -715,13 +715,16 @@ function viewFly() {
   return `<div class="top"><div><div class="kicker">${esc(f.tail)} · ${esc(typeById(f.typeId)?.name || '')}</div><h1>${flightTitle(f)}</h1></div>
     <div style="text-align:right">${f.engineStart ? `<div class="kicker">Takeoff ${hm(takeoffOf(f))} ${clockMode() === 'zulu' ? '' : zoneAbbr(viewZone(), takeoffOf(f))} <span class="z">${zt(takeoffOf(f))}</span></div><div class="mono" style="font-size:20px" id="elapsed"></div>` : '<span class="badge">Planned</span>'}</div></div>
   <div class="stack">
-    <div class="card" style="padding:10px 12px">
+    <div class="card ${ui.viewTime ? 'viewing' : ''}" style="padding:10px 12px">
       <div class="timebox">
-        <div class="stack" style="gap:2px;min-width:64px"><label for="flyTime" class="lbl">${ui.viewTime ? 'Showing ' : ''}${flyMode(f) === 'timer' ? 'Flight timer' : `${clockLabel()} clock`}</label><span class="z" id="flyZ"></span></div>
+        <div class="stack" style="gap:2px;min-width:64px"><label for="flyTime" class="lbl">${flyMode(f) === 'timer' ? 'Flight timer' : `${clockLabel()} clock`}</label><span class="z" id="flyZ"></span></div>
         <input id="flyTime" data-fmt="hm" inputmode="numeric" value="${flyTimeValue(f)}" aria-label="${flyMode(f) === 'timer' ? 'Flight timer' : 'Clock time'} to show levels for">
         ${f.engineStart ? `<button class="btn sm" data-act="toggleFlyMode" style="height:44px">${flyMode(f) === 'timer' ? (clockMode() === 'zulu' ? 'Zulu' : 'Clock') : 'Timer'}</button>` : ''}
-        <button class="btn sm ${ui.viewTime ? 'outline' : ''}" data-act="liveTime" style="height:44px">${ui.viewTime ? 'Live' : 'Live'}</button>
+        ${ui.viewTime
+          ? '<button class="btn sm backlive" data-act="liveTime" style="height:44px">Go live</button>'
+          : '<span class="livedot" role="status" aria-label="Showing live time"><span class="dot"></span>Live</span>'}
       </div>
+      ${ui.viewTime ? `<div class="small" style="color:var(--amber)">Not live: showing ${fmtTimer(timerAt(f, ui.viewTime))}. Alerts still run on real time; returns to live after 2 min.</div>` : ''}
     </div>
     ${f.engineStart && clockMode() !== 'zulu' ? zoneControl(f, false) : ''}
     <div id="flyLive"></div>
@@ -1637,7 +1640,7 @@ const actions = {
   saveEte: () => saveSheet('ete'),
   saveShutdown: () => saveSheet('shutdown'),
   liveTime() { ui.viewTime = null; render(); },
-  alertSwitch() { const a = ui.alert; ui.alert = null; renderAlert(); go('fly'); openSheet('switch', { tank: a?.tank }); },
+  alertSwitch() { const a = ui.alert; ui.alert = null; ui.viewTime = null; renderAlert(); go('fly'); openSheet('switch', { tank: a?.tank }); },
   alertDismiss() { ui.alert = null; renderAlert(); },
   clockMode(el) { state.settings.clockMode = el.dataset.v; persist(); render(); toast(el.dataset.v === 'zulu' ? 'Clock times now in Zulu' : 'Clock times now in each flight\'s local zone'); },
   sdAtMs(el) { ui.sd.at = sheetFieldValue(+el.dataset.ms); const i = $('#sd-at'); if (i) i.value = ui.sd.at; renderSheetPreview(); },
@@ -1787,6 +1790,7 @@ function onField(ev, committed) {
     else t = parseClockZ(el.value, now());
     if (!isFinite(t)) { toast(flyMode(f) === 'timer' ? 'Enter the flight timer as h:mm' : 'Enter the time as HH:MM'); return; }
     ui.viewTime = Math.abs(t - now()) < MIN ? null : t;
+    ui.viewSetAt = now();
     render();
     return;
   }
@@ -1857,6 +1861,10 @@ document.addEventListener('visibilitychange', () => {
 setInterval(() => {
   if (checkIdle()) return;
   checkAlerts();
+  if (ui.viewTime && now() - Math.max(ui.viewSetAt || 0, state.lastInputAt || 0) > 2 * MIN && document.activeElement?.id !== 'flyTime') {
+    ui.viewTime = null;
+    if (ui.route === 'fly') render();
+  }
   if (ui.route === 'fly' && !ui.viewTime && document.activeElement?.id !== 'flyTime') {
     const ft = $('#flyTime'); if (ft) ft.value = flyTimeValue(activeFlight());
     renderFlyLive();
