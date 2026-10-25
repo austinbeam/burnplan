@@ -25,12 +25,11 @@ export const BUILTIN_TYPES = [
       climbGph: 20,
       climbMin: 14,       // initial climb, per-flight override in Setup
       stepClimbMin: 5,    // expected length of a mid-flight climb when none is entered
-      cruise: 15,      // typical cruise, used when ForeFlight fuel is blank
-      base: 16         // conservative base cruise, used for reserves
+      cruise: 15       // cruise burn: planning default when ForeFlight fuel is blank, and the reserve rate
     },
     rules: {
       floor: { gal: 4, mode: 'hard' },
-      reserve: { min: 60, rate: 'base', customGph: 16, mode: 'hard' },
+      reserve: { min: 60, rate: 'cruise', customGph: 15, mode: 'hard' },
       imbalance: { gal: 15, mode: 'warn' },
       switchMargin: 1,
       minLegMin: 20,

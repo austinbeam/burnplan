@@ -523,7 +523,7 @@ function renderSetupCalc() {
   box.innerHTML = `<div class="stack" style="gap:6px">
     <div class="kv"><span class="mut">Taxi share (${f1(b.ground)} gph, run-up incl.)</span><span class="v">${f1(tl.taxiFuel)}</span></div>
     <div class="kv"><span class="mut">Climb ${dur(tl.climbMin)} @ ${f1(tl.climbGph)} gph → level at +${dur(tl.climbMin)}</span><span class="v">${f1(tl.climbFuel)}</span></div>
-    <div class="kv"><span class="mut">Cruise ${dur(tl.cruiseMin)} @ ${tl.derived ? 'auto' : num(ui.draft.cruiseGph) > 0 ? 'your' : 'typical'} rate</span><span class="v">${f1(tl.cruiseGph)} gph · ${f1((tl.cruiseMin / 60) * tl.cruiseGph)}</span></div>
+    <div class="kv"><span class="mut">Cruise ${dur(tl.cruiseMin)} @ ${tl.derived ? 'auto' : num(ui.draft.cruiseGph) > 0 ? 'your' : 'aircraft'} rate</span><span class="v">${f1(tl.cruiseGph)} gph · ${f1((tl.cruiseMin / 60) * tl.cruiseGph)}</span></div>
     <div class="kv total"><span>Block ${dur(tl.blockMin)}</span><span class="v">${f1(tl.totalFuel)} gal</span></div>
     <div class="kv"><span class="mut">Aboard ${f1(c.aboard)} · lands with</span><span class="v" style="color:${c.ok ? 'var(--tx)' : 'var(--warn)'}">${f1(c.lands)}</span></div>
     <div class="kv"><span class="mut">Reserve ${dur(cfg.rules.reserve.min)} @ ${f1(P.reserveGph(cfg))}${c.altFuel ? ` + alternate ${f1(c.altFuel)}` : ''}</span><span class="v">${f1(c.required)}</span></div>
@@ -1604,9 +1604,9 @@ function flightCsv(f) {
 const OVR_FIELDS = [
   ['Burn profiles', [
     ['burn.ground', 'Ground gph (incl. run-up)'], ['burn.climbGph', 'Climb gph'], ['burn.climbMin', 'Initial climb minutes'], ['burn.stepClimbMin', 'Mid-flight climb minutes'],
-    ['burn.cruise', 'Typical cruise gph'], ['burn.base', 'Base cruise gph (reserve)']]],
+    ['burn.cruise', 'Cruise gph (plan default & reserve)']]],
   ['Reserve', [
-    ['rules.reserve.min', 'Reserve minutes'], ['rules.reserve.rate', 'Reserve rate', ['base', 'cruise', 'custom']],
+    ['rules.reserve.min', 'Reserve minutes'], ['rules.reserve.rate', 'Reserve rate', ['cruise', 'custom']],
     ['rules.reserve.customGph', 'Custom reserve gph'], ['rules.reserve.mode', 'Reserve rule', ['hard', 'warn', 'off']]]],
   ['Tank rules', [
     ['rules.floor.gal', 'Tank floor gal'], ['rules.floor.mode', 'Floor rule', ['hard', 'warn']],
@@ -1648,13 +1648,13 @@ function viewTail(tail) {
     const def = getPath(type, path);
     const id = 'ov-' + path.replace(/\./g, '-');
     const control = opts
-      ? `<select id="${id}" data-ovr="${path}"><option value="">${esc(String(def))} (type)</option>${opts.map((o) => `<option ${String(own) === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`
+      ? `<select id="${id}" data-ovr="${path}"><option value="">Default: ${esc(String(def))}</option>${opts.map((o) => `<option ${String(own) === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`
       : `<input id="${id}" class="mono" data-ovr="${path}" value="${own ?? ''}" placeholder="${esc(String(def ?? ''))}" inputmode="decimal">`;
     return `<label for="${id}" class="${own != null ? '' : 'mut'}">${label}${own != null ? ' •' : ''}</label>${control}`;
   };
   return `<div class="top"><div><div class="kicker"><a href="#aircraft">Aircraft</a> · ${esc(type.name)}</div><h1 class="mono">${esc(tail.tail)}</h1></div></div>
   <div class="stack">
-    <div class="mut small">Blank = use the type's value (shown grey). A • marks an override for this tail only. Changes apply to new plans; flights already planned keep their settings until rebuilt from Setup.</div>
+    <div class="mut small">Blank or "Default" = the aircraft type's setting (shown grey). Anything you set here applies to this tail only and is marked •. Changes apply to new plans; flights already planned keep their settings until rebuilt from Setup.</div>
     <div class="card"><h2>Tank capacities (usable gal)</h2><div class="ovr">${cfg.tanks.map((t) => `<label for="cap-${t.id}" class="${ov.capacities?.[t.id] ? '' : 'mut'}">${esc(t.name)} (${esc(t.id)})</label><input id="cap-${t.id}" class="mono" data-cap="${esc(t.id)}" value="${ov.capacities?.[t.id] ?? ''}" placeholder="${type.tanks.find((x) => x.id === t.id).capacity}" inputmode="decimal">`).join('')}</div></div>
     ${OVR_FIELDS.map(([title, fields]) => `<div class="card"><h2>${title}</h2><div class="ovr">${fields.map(fld).join('')}</div>${title === 'Reserve' ? `<div class="mut small">= ${f1(P.reserveGal(cfg))} gal (${dur(cfg.rules.reserve.min)} @ ${f1(P.reserveGph(cfg))} gph)</div>` : ''}</div>`).join('')}
     <div class="row"><button class="btn grow" data-act="exportTail" data-tail="${esc(tail.tail)}">Share tail setup</button><button class="btn danger grow" data-act="deleteTail" data-tail="${esc(tail.tail)}">Remove</button></div>

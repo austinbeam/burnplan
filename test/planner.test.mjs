@@ -50,10 +50,10 @@ test('KMDD-KVBT: mains only, finishes on right, balanced', () => {
 
 test('bigger reserve than floors is held evenly', () => {
   const cfg = P.resolveConfig(type, { overrides: { rules: { reserve: { min: 90 } } } });
-  assert.equal(P.reserveGal(cfg), 24);
+  assert.equal(P.reserveGal(cfg), 22.5); // 90 min at the 15 gph cruise burn
   const r = plan(cfg, { taxiMin: 15, eteMin: 200, totalFuel: 55 });
   console.log(show(r), '\nissues', r.c.issues);
-  assert.ok(r.c.landing >= 24 - 0.3, r.c.landing);
+  assert.ok(r.c.landing >= 22.5 - 0.3, r.c.landing);
 });
 
 test('user edit that breaks rules is flagged', () => {
@@ -262,4 +262,11 @@ test('mid-flight climbs default to the aircraft step-climb length; the initial c
   assert.equal(Math.round(rs.segs[0].min), 4);
   const g = { ...f, cfg: P.resolveConfig(type, { overrides: { burn: { stepClimbMin: 8 } } }) };
   assert.equal(P.climbLenMin(g, f.events[2]), 8);
+});
+
+test('reserve uses the aircraft cruise burn (older base setting maps to it)', () => {
+  assert.equal(P.reserveGal(P.resolveConfig(type)), 15);
+  assert.equal(P.reserveGal(P.resolveConfig(type, { overrides: { burn: { cruise: 16 } } })), 16);
+  assert.equal(P.reserveGal(P.resolveConfig(type, { overrides: { rules: { reserve: { rate: 'base' } } } })), 15);
+  assert.equal(P.reserveGal(P.resolveConfig(type, { overrides: { rules: { reserve: { rate: 'custom', customGph: 17 } } } })), 17);
 });

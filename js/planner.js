@@ -33,13 +33,13 @@ export function tankMap(cfg) { return Object.fromEntries(cfg.tanks.map((t) => [t
 export function reserveGal(cfg) {
   const r = cfg.rules.reserve;
   if (!r || r.mode === 'off') return 0;
-  const gph = r.rate === 'base' ? cfg.burn.base : r.rate === 'cruise' ? cfg.burn.cruise : +r.customGph || 0;
+  const gph = r.rate === 'custom' ? +r.customGph || 0 : cfg.burn.cruise; // 'cruise' (and older 'base') use the cruise burn
   return (r.min / 60) * gph;
 }
 
 export function reserveGph(cfg) {
   const r = cfg.rules.reserve;
-  return r.rate === 'base' ? cfg.burn.base : r.rate === 'cruise' ? cfg.burn.cruise : +r.customGph || cfg.burn.base;
+  return r.rate === 'custom' ? +r.customGph || cfg.burn.cruise : cfg.burn.cruise;
 }
 
 // ---- burn timeline -------------------------------------------------------
@@ -60,7 +60,7 @@ export function buildTimeline(cfg, { taxiMin = 0, eteMin = 0, totalFuel = 0, cli
   else if (totalFuel > 0 && cruiseMin > 0) {
     const f = totalFuel - taxiFuel - climbFuel;
     if (f > 0) { cruiseGph = f / (cruiseMin / 60); derived = true; }
-    else issue = 'ForeFlight fuel is less than taxi + climb; using typical cruise.';
+    else issue = 'ForeFlight fuel is less than taxi + climb; using the aircraft cruise burn.';
   }
   const segments = [
     { phase: 'taxi', start: 0, min: taxiMin, gph: b.ground },
