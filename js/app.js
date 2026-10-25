@@ -3,7 +3,9 @@ import * as P from './planner.js';
 import * as S from './store.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v25'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v26'; // keep in step with VERSION in sw.js
+// Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
+export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
 const HOUR = 3600000;
 
@@ -379,7 +381,7 @@ function readHash() {
 }
 
 function renderTabs() {
-  const tabs = [['setup', 'Setup'], ['plan', 'Plan'], ['fly', 'Fly'], ['log', 'Log'], ['aircraft', 'Aircraft']];
+  const tabs = [['setup', 'Setup'], ['plan', 'Plan'], ['fly', 'Fly'], ['log', 'Log'], ['aircraft', 'Settings']];
   $('#tabs').innerHTML = tabs.map(([r, l]) => `<a href="#${r}" class="${ui.route === r ? 'on' : ''}">${l}</a>`).join('');
 }
 
@@ -1591,8 +1593,6 @@ function viewLog() {
     ${calibrationCard()}
     <div class="list">${flights.length ? flights.map((f) => `<a class="item" href="#log/${f.id}"><div><div class="t">${flightTitle(f)}</div><div class="s">${fmtDate(f.engineStart || f.createdAt, f.tz || phoneTZ())} · ${esc(f.tail)} · ${f.status === 'active' ? 'in progress' : f.status === 'draft' ? 'planned' : f.autoSaved ? 'auto-saved' : 'closed'}</div></div>
       <span class="mono ${f.id === state.activeFlightId ? '' : 'mut'}" style="color:${f.id === state.activeFlightId ? 'var(--amber)' : ''}">${f.id === state.activeFlightId ? 'active' : f1(f.finalUsed ?? f.plannedFuel) + ' gal'}</span></a>`).join('') : '<div class="card empty">No flights yet.</div>'}</div>
-    <div class="card"><h2>Backup</h2><div class="mut small">Everything is stored only on this phone. Export a backup to keep a copy or move to a new phone.</div>
-      <div class="row"><button class="btn grow" data-act="exportAll">Export backup</button><label class="btn grow" for="importFile">Import</label><input type="file" id="importFile" accept="application/json,.json" class="hidden"></div></div>
   </div>`;
 }
 
@@ -1735,8 +1735,9 @@ function viewAircraft() {
   if (ui.sub && ui.sub.startsWith('type-')) return viewTypeEditor(ui.sub.slice(5));
   if (ui.sub && state.tails[decodeURIComponent(ui.sub)]) return viewTail(state.tails[decodeURIComponent(ui.sub)]);
   const tails = Object.values(state.tails);
-  return `<div class="top"><div><div class="kicker">Aircraft</div><h1>Tails &amp; types</h1></div></div>
+  return `<div class="top"><div><div class="kicker">Burnplan</div><h1>Settings</h1></div></div>
   <div class="stack">
+    <div class="lbl" style="text-transform:uppercase;letter-spacing:.06em;font-size:11px;margin-bottom:-6px">Your aircraft</div>
     <div class="list">${tails.length ? tails.map((t) => `<a class="item" href="#aircraft/${encodeURIComponent(t.tail)}"><div><div class="t mono">${esc(t.tail)}</div><div class="s">${esc(typeById(t.typeId)?.name || 'missing type')}${Object.keys(t.overrides || {}).length ? ' · overrides' : ''}</div></div><span class="mut">›</span></a>`).join('') : '<div class="card empty">No aircraft yet.</div>'}</div>
     <div class="card"><h2>Add aircraft</h2>${tailForm()}</div>
     <div class="card"><h2>Aircraft types</h2>
@@ -1748,8 +1749,10 @@ function viewAircraft() {
       <div class="field"><span class="lbl">Clock times</span>
         <div class="seg" role="group" aria-label="Clock times"><button class="${clockMode() === 'local' ? 'on' : ''}" aria-pressed="${clockMode() === 'local'}" data-act="clockMode" data-v="local">Local (flight's zone)</button><button class="${clockMode() === 'zulu' ? 'on' : ''}" aria-pressed="${clockMode() === 'zulu'}" data-act="clockMode" data-v="zulu">Zulu</button></div></div>
       <div class="mut small">Local shows each flight in the zone it departed from, with Zulu alongside. Zulu shows and reads all clock times in UTC.</div>
-      <div class="kv"><span class="mut">App version</span><span class="v">${APP_VERSION}</span></div>
     </div>
+    <div class="card"><h2>Backup</h2><div class="mut small">Everything is stored only on this phone. Export a backup to keep a copy or move to a new phone; import a backup, flight, tail or type file.</div>
+      <div class="row"><button class="btn grow" data-act="exportAll">Export backup</button><label class="btn grow" for="importFile">Import</label><input type="file" id="importFile" accept="application/json,.json" class="hidden"></div></div>
+    <div class="buildinfo mono">Burnplan ${APP_VERSION} · build ${APP_BUILD.startsWith('__') ? 'dev' : esc(APP_BUILD)}</div>
   </div>`;
 }
 
@@ -1767,7 +1770,7 @@ function viewTail(tail) {
       : `<input id="${id}" class="mono" data-ovr="${path}" value="${own ?? ''}" placeholder="${esc(String(def ?? ''))}" inputmode="decimal">`;
     return `<label for="${id}" class="${own != null ? '' : 'mut'}">${label}${own != null ? ' •' : ''}</label>${control}`;
   };
-  return `<div class="top"><div><div class="kicker"><a href="#aircraft">Aircraft</a> · ${esc(type.name)}</div><h1 class="mono">${esc(tail.tail)}</h1></div></div>
+  return `<div class="top"><div><div class="kicker"><a href="#aircraft">Settings</a> · ${esc(type.name)}</div><h1 class="mono">${esc(tail.tail)}</h1></div></div>
   <div class="stack">
     <div class="mut small">Blank or "Default" = the aircraft type's setting (shown grey). Anything you set here applies to this tail only and is marked •. Changes apply to new plans; flights already planned keep their settings until rebuilt from Setup.</div>
     <div class="card"><h2>Tank capacities (usable gal)</h2><div class="ovr">${cfg.tanks.map((t) => `<label for="cap-${t.id}" class="${ov.capacities?.[t.id] ? '' : 'mut'}">${esc(t.name)} (${esc(t.id)})</label><input id="cap-${t.id}" class="mono" data-cap="${esc(t.id)}" value="${ov.capacities?.[t.id] ?? ''}" placeholder="${type.tanks.find((x) => x.id === t.id).capacity}" inputmode="decimal">`).join('')}</div></div>
@@ -1780,7 +1783,7 @@ function viewTypeEditor(id) {
   const t = typeById(id);
   if (!t) return '<div class="card empty">Type not found.</div>';
   const ro = t.builtin ? 'disabled' : '';
-  return `<div class="top"><div><div class="kicker"><a href="#aircraft">Aircraft</a> · ${t.builtin ? 'Built-in type' : 'Custom type'}</div><h1>${esc(t.name)}</h1></div></div>
+  return `<div class="top"><div><div class="kicker"><a href="#aircraft">Settings</a> · ${t.builtin ? 'Built-in type' : 'Custom type'}</div><h1>${esc(t.name)}</h1></div></div>
   <div class="stack">
     ${t.builtin ? `<div class="mut small">Built-in types can't be edited. Copy it to make a version you can change; per-tail tweaks (capacities, burn, rules) can also be done on the tail itself.</div>` : `<div class="field"><label for="ty-name">Name</label><input id="ty-name" data-ty="name" value="${esc(t.name)}"></div>`}
     <div class="card"><h2>Tanks (left to right)</h2>

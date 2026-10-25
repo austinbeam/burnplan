@@ -31,6 +31,10 @@ jobs:
         run: |
           mkdir -p _site
           cp -r index.html app.css manifest.webmanifest sw.js js icons _site/
+          BUILD="${GITHUB_SHA::7} · $(date -u +'%b %-d %H:%MZ')"
+          sed -i "s/__BUILD__/${BUILD}/" _site/js/app.js
+          # every deploy gets its own cache name so installed apps pick it up
+          sed -i "s/const VERSION = '\(burnplan-v[0-9]*\)'/const VERSION = '\1-${GITHUB_SHA::7}'/" _site/sw.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
