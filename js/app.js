@@ -4,7 +4,7 @@ import * as S from './store.js';
 import { loadGuide } from './guide.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v39'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v40'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -1037,14 +1037,19 @@ function openSheet(name, data = {}) {
   if (name === 'start') Object.assign(sd, { tmode: 'timer', at: '', atStamp: t, tank: f.plan.legs[0]?.tank || f.cfg.startTank, sofar: 'plan', rows: [], used: '' });
   if (name === 'check') Object.assign(sd, { at: toField(t), used: '', gph: '', rebuild: true });
   if (name === 'ete') {
-    const rs = P.remainingSegs(f, t);
-    Object.assign(sd, { at: toField(t), ete: '', fuel: '', gph: '', altFuel: f.alt?.on ? String(f.alt.fuel || '') : '', divert: false, ident: '', prevEte: (rs.landMin ?? rs.endMin) - rs.startMin });
+    Object.assign(sd, { at: toField(t), ete: '', fuel: '', gph: '', altFuel: f.alt?.on ? String(f.alt.fuel || '') : '', divert: false, ident: '' });
   }
   if (name === 'shutdown') Object.assign(sd, { at: toField(f.freezeAt || t), used: '' });
   if (name === 'climb') Object.assign(sd, { at: toField(t), len: '', gph: String(f.climbGph || f.cfg.burn.climbGph), rebuild: true });
   if (name === 'level') Object.assign(sd, { at: toField(t), rebuild: true });
   if (name === 'descent') { const prev = f.events.filter((e) => e.type === 'descent' && e.at <= t).sort((a, b) => a.at - b.at).pop(); Object.assign(sd, { at: toField(t), gph: String(prev ? prev.gph : P.descentGphOf(f)), rebuild: true }); }
-  if (name === 'landed') Object.assign(sd, { at: toField(t), rebuild: true });
+  if (name === 'landed') {
+    // Austin often taps Landed after taxi-in, so start from the expected landing (last ETE update or
+    // the plan), never before the latest climb/descent/level entry and never in the future.
+    const lastVert = f.events.filter((e) => ['climb', 'descent', 'level'].includes(e.type) && e.at <= t).reduce((a, e) => Math.max(a, e.at), takeoffOf(f) || f.engineStart);
+    const exp = Math.min(t, Math.max(P.arrivalOf(f), lastVert));
+    Object.assign(sd, { at: toField(isFinite(exp) ? exp : t), expLand: isFinite(exp) && exp < t - MIN ? exp : null, rebuild: true });
+  }
   if (name === 'gauge') Object.assign(sd, { at: f.engineStart ? toField(t) : hm(t), tmode: f.engineStart ? sd.tmode : 'clock', vals: {}, note: '' });
   if (name === 'burn') Object.assign(sd, { at: toField(t), gph: '', scope: 'now', was: P.cruiseRateAt(f, t) });
   if (name === 'start') sd.climb = dur(f.climbMin ?? f.cfg.burn.climbMin);
@@ -1173,14 +1178,30 @@ function sheetCheck(f) {
     <button class="btn primary block" data-act="saveCheck">Save check</button>`];
 }
 
+// Where the flight stands at t: ETE left (from the last ETE update, or the plan) and Burnplan's
+// calculated fuel to landing. Shown as the Update ETE placeholders; a blank ETE keeps this one.
+function eteNow(f, t) {
+  const rs = P.remainingSegs(f, t);
+  const land = rs.landMin ?? rs.endMin;
+  return { ete: Math.max(0, Math.round(land - rs.startMin)), fuel: P.fuelBetween(rs.segs, rs.startMin, land) };
+}
+
+// The remaining timeline as it would be with this ETE (and gph) saved at t.
+function eteWhatIf(f, t, ete, gph) {
+  const ev = { type: 'ete', at: t, eteMin: ete, gph: gph > 0 ? gph : null, gphSet: gph > 0 };
+  const rs = P.remainingSegs({ ...f, events: [...f.events, ev] }, t);
+  return { rs, toLand: P.fuelBetween(rs.segs, rs.startMin, rs.landMin), toEnd: P.fuelBetween(rs.segs, rs.startMin, rs.endMin) };
+}
+
 function sheetEte(f) {
   const dest = f.divert?.ident || f.to || 'destination';
+  const cur = eteNow(f, sheetTime());
   return ['Update ETE', `${timeField('sd-at', 'As of', ui.sd.at)}
     <label class="check"><input type="checkbox" data-sd="divert" ${ui.sd.divert ? 'checked' : ''}>Fuel stop / divert</label>
     <div class="field ${ui.sd.divert ? '' : 'hidden'}" id="divIdent"><label for="sd-ident">Stop ident</label><input id="sd-ident" class="mono" data-sd="ident" value="${esc(ui.sd.ident)}" autocapitalize="characters"></div>
-    <div class="grid2">
-      <div class="field"><label for="sd-ete">ETE to <span id="eteDest">${esc(ui.sd.divert ? ui.sd.ident || 'stop' : dest)}</span> (was ${dur(ui.sd.prevEte)})</label><input id="sd-ete" class="big key" data-fmt="hm" data-sd="ete" value="${esc(ui.sd.ete)}" inputmode="numeric" placeholder="2:58"></div>
-      <div class="field"><label for="sd-fuel">ForeFlight fuel to it (opt., compare only)</label><input id="sd-fuel" class="big" data-sd="fuel" value="${esc(ui.sd.fuel)}" inputmode="decimal" placeholder="45.1"></div>
+    <div class="grid2 bottom">
+      <div class="field"><label for="sd-ete">ETE to <span id="eteDest">${esc(ui.sd.divert ? ui.sd.ident || 'stop' : dest)}</span></label><input id="sd-ete" class="big key" data-fmt="hm" data-sd="ete" value="${esc(ui.sd.ete)}" inputmode="numeric" placeholder="${isFinite(cur.ete) ? dur(cur.ete) : ''}"></div>
+      <div class="field"><label for="sd-fuel">ForeFlight fuel (compare)</label><input id="sd-fuel" class="big" data-sd="fuel" value="${esc(ui.sd.fuel)}" inputmode="decimal" placeholder="${isFinite(cur.fuel) ? f1(cur.fuel) : ''}"></div>
     </div>
     <div class="grid2">
       <div class="field"><label for="sd-gph">New cruise gph (opt.) · now ${f1(P.cruiseRateAt(f, now()))}</label><input id="sd-gph" class="mono" data-sd="gph" value="${esc(ui.sd.gph)}" inputmode="decimal" placeholder="${f1(P.cruiseRateAt(f, now()))} (keep)"></div>
@@ -1357,7 +1378,9 @@ function sheetDescent(f) {
 }
 
 function sheetLanded(f) {
+  const exp = ui.sd.expLand;
   return ['Landed', `${timeField('sd-at', 'Landed at')}
+    ${exp ? `<div class="row wrap" style="align-items:center;gap:8px"><button class="btn sm" data-act="sdAtMs" data-ms="${exp}">Expected ${fmtTimer(timerAt(f, exp))}</button><span class="mut small">Prefilled from the ETE. Change it to the timer at touchdown.</span></div>` : ''}
     <div class="mut small">Taxi-in burns at the ground rate (${f1(P.groundGph(f))} gph) until you shut down. The plan expects ${P.taxiInMinOf(f)} min of taxi.</div>
     <div id="sheetPreview"></div>
     <button class="btn primary block" data-act="saveLanded">Save landing</button>`];
@@ -1511,23 +1534,29 @@ function renderSheetPreview() {
   }
   if (ui.sheet === 'ete') {
     const est = P.estimate(f, f.cfg, t);
-    const ete = P.parseDur(ui.sd.ete);
+    const cur = eteNow(f, t);
+    const ete = ui.sd.ete.trim() ? P.parseDur(ui.sd.ete) : cur.ete;
     const fuel = num(ui.sd.fuel), gph = num(ui.sd.gph);
+    const pe = $('#sd-ete'), pf = $('#sd-fuel');
+    if (pe) pe.placeholder = dur(cur.ete);
+    if (pf) pf.placeholder = f1(cur.fuel);
     const aboveFloors = f.cfg.tanks.reduce((a, x) => a + Math.max(0, est.levels[x.id] - f.cfg.rules.floor.gal), 0);
     let html = `<div class="kv"><span class="mut">Aboard (est.)</span><span class="v">${f1(est.total)} · ${f1(aboveFloors)} above floors</span></div>`;
     if (isFinite(ete) && ete > 0) {
       const rate = gph > 0 ? gph : P.cruiseRateAt(f, t);
-      const need = (rate * ete) / 60;
+      // Same timeline as the Fly page's destination card: rest of climb, cruise, descent, taxi-in.
+      const w = eteWhatIf(f, t, ete, gph);
+      const need = w.toEnd;
       const alt = f.alt?.on && !ui.sd.divert ? num(ui.sd.altFuel) || 0 : 0;
       const req = P.reserveGal(f.cfg) + alt;
       const lands = est.total - need;
       const ok = lands >= req - P.TOL;
-      const reach = !ok && rate > 0 ? t + ((est.total - req) / rate) * HOUR : null;
+      const reach = !ok && est.total > req ? MS(f, w.rs.startMin + P.timeForFuel(w.rs.segs, w.rs.startMin, est.total - req)) : null;
       const arr = t + ete * MIN;
       html += `<div class="issue ${ok ? 'info' : 'error'}" style="flex-direction:column;gap:4px">
         <div class="kv" style="width:100%"><b>${ok ? 'Makes it' : `${f1(req - lands)} gal short of reserve`}</b><span class="v">arr ${hm(arr)} <span class="z">${zt(arr)}</span></span></div>
-        <div class="kv" style="width:100%"><span>Needs ${f1(need)} @ ${f1(rate)} gph · lands with</span><span class="v">${f1(lands)} = ${dur((lands / P.reserveGph(f.cfg)) * 60)}</span></div>
-        ${fuel > 0 ? `<div class="kv" style="width:100%"><span class="mut">ForeFlight says ${f1(fuel)} (${f1(fuel / (ete / 60))} gph)</span><span class="v mut">${fuel > need ? '+' : ''}${f1(fuel - need)} vs Burnplan</span></div>` : ''}
+        <div class="kv" style="width:100%"><span>Needs ${f1(need)} (cruise ${f1(rate)} gph) · lands with</span><span class="v">${f1(lands)} = ${dur((lands / P.reserveGph(f.cfg)) * 60)}</span></div>
+        ${fuel > 0 ? `<div class="kv" style="width:100%"><span class="mut">ForeFlight says ${f1(fuel)} to land (${f1(fuel / (ete / 60))} gph)</span><span class="v mut">${fuel > w.toLand ? '+' : ''}${f1(fuel - w.toLand)} vs Burnplan</span></div>` : ''}
         ${reach ? `<div class="kv" style="width:100%"><span>Reserve reached</span><span class="v">${hm(reach)} · ${Math.round((arr - reach) / MIN)} min before arrival</span></div>` : ''}
       </div>`;
     }
@@ -1588,7 +1617,7 @@ function saveSheet(kind) {
     msg = `Fuel check saved · tanks corrected to ${f1(u)} gal used${g > 0 ? ` · cruise ${f1(g)} gph` : ''}`;
   }
   if (kind === 'ete') {
-    const ete = P.parseDur(ui.sd.ete);
+    const ete = ui.sd.ete.trim() ? P.parseDur(ui.sd.ete) : eteNow(f, t).ete;
     if (!isFinite(ete) || ete <= 0) return toast('Enter ETE');
     const ev = { type: 'ete', at: t, enteredAt, eteMin: ete, fuelToDest: num(ui.sd.fuel) || null, gph: num(ui.sd.gph) || null, gphSet: num(ui.sd.gph) > 0, altFuel: num(ui.sd.altFuel) || null };
     if (ui.sd.divert) { ev.divert = (ui.sd.ident || 'STOP').toUpperCase(); f.divert = { ident: ev.divert, at: t }; ev.altFuel = 0; if (f.alt) f.alt.onBeforeDivert = f.alt.on; if (f.alt) f.alt.on = false; }

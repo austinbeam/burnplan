@@ -94,6 +94,8 @@ The timeline is taxi → climb → cruise → descent → taxi-in.
 
 A check's fuel used, and ForeFlight's fuel-to-destination on an ETE update, must never be turned into a burn rate. ForeFlight fuel is shown for comparison only.
 
+**Update ETE sheet:** the ETE and ForeFlight-fuel boxes show, as placeholders, the current ETE left (last ETE update or the plan, minus elapsed) and Burnplan's calculated fuel to landing. A blank ETE saves the current one. A blank fuel box stays blank: Burnplan's own number is never stored as `fuelToDest`. The sheet's "Needs / lands with" uses `remainingSegs` with the new ETE (rest of climb, cruise, descent, taxi-in), the same as the Fly page's destination card.
+
 ### GI 275 fuel checks
 
 The engine monitor's "used" figure is treated as correct. The difference goes **to climb first** (the tanks burned during climb since the last check), because climb is the least certain part of the estimate. Only what's left over spreads across the rest of the burn.
@@ -103,6 +105,7 @@ The engine monitor's "used" figure is treated as correct. The difference goes **
 - The initial climb length comes from setup. A mid-flight climb with no length assumes `burn.stepClimbMin` (5 min).
 - Climbs are almost always on a single tank.
 - Descent can be stepped. Each **Descend** entry has its own gph, with **Level off** between steps (burn goes back to cruise). **Landed** starts taxi-in at the ground rate.
+- Austin often taps Landed after taxi-in. The Landed sheet is prefilled with the expected landing (`P.arrivalOf`: last ETE update or the plan), never earlier than the latest climb/descent/level entry and never later than now, with an **Expected** button to put it back. He corrects it to the timer at touchdown. A backdated landing burns at the ground rate from that time.
 
 ### Tanks marked done
 
