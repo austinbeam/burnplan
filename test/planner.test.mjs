@@ -515,3 +515,50 @@ test('switchFrom: a rebuild after a kept leg starts on the other side of its gro
   const g = P.generatePlan({ cfg, segs, startMin: 0, endMin: 120, levels, switchFrom: 'LM', requiredLanding: P.reserveGal(cfg) });
   assert.equal(g.legs[0].tank, 'RM');
 });
+
+// ---- store: logged events are never dropped by app logic ----
+import * as S from '../js/store.js';
+const mem = {};
+globalThis.localStorage = { getItem: (k) => (k in mem ? mem[k] : null), setItem: (k, v) => { mem[k] = String(v); }, removeItem: (k) => { delete mem[k]; } };
+const flightWith = (events) => ({ id: 'f1', from: 'KAAA', to: 'KBBB', status: 'active', events });
+const clone = (x) => JSON.parse(JSON.stringify(x));
+
+test('a stale copy of the app saving does not drop a switch another copy logged', () => {
+  for (const k of Object.keys(mem)) delete mem[k];
+  const base = { ...S.emptyState(), flights: { f1: flightWith([{ type: 'engine', at: 1000, enteredAt: 1000, tank: 'LM' }, { type: 'takeoff', at: 2000, enteredAt: 1000 }]) }, activeFlightId: 'f1' };
+  S.save(base);
+  const a = S.load(), b = S.load();              // two open copies
+  a.flights.f1.events.push({ type: 'switch', tank: 'RM', at: 5000, enteredAt: 5000 });
+  S.save(a);
+  b.settings.timeMode = 'clock';                 // stale copy saves something unrelated
+  S.save(b);
+  const now = S.load();
+  assert.deepEqual(now.flights.f1.events.map((e) => e.type + (e.tank || '')), ['engineLM', 'takeoff', 'switchRM']);
+  assert.equal(now.settings.timeMode, 'clock');
+  assert.deepEqual(b.flights.f1.events.map((e) => e.type), ['engine', 'takeoff', 'switch'], 'the stale copy now has the switch in memory too');
+});
+
+test('a deliberate delete stays deleted; a merge never moves an entry', () => {
+  for (const k of Object.keys(mem)) delete mem[k];
+  S.save({ ...S.emptyState(), flights: { f1: flightWith([{ type: 'switch', tank: 'RM', at: 5000, enteredAt: 5000 }, { type: 'switch', tank: 'LM', at: 9000, enteredAt: 9000 }]) } });
+  const a = S.load(), b = S.load();
+  const [gone] = a.flights.f1.events.splice(0, 1);
+  a.flights.f1.removedEvents = [gone.id];
+  S.save(a);
+  b.flights.f1.events.push({ type: 'switch', tank: 'RT', at: 12000, enteredAt: 12000 });
+  S.save(b);
+  const now = S.load().flights.f1.events;
+  assert.deepEqual(now.map((e) => `${e.tank}@${e.at}`), ['LM@9000', 'RT@12000']);
+});
+
+test('importing a flight or backup restores missing entries and never removes any', () => {
+  const cur = { ...S.emptyState(), flights: { f1: flightWith([{ type: 'switch', tank: 'LM', at: 9000, enteredAt: 9000 }]) } };
+  S.ensureIds(cur);
+  const exported = flightWith([{ type: 'switch', tank: 'RM', at: 5000, enteredAt: 5000 }]);
+  const r1 = S.mergeImport(cur, { kind: 'flight', flight: clone(exported) });
+  assert.deepEqual(r1.state.flights.f1.events.map((e) => e.tank), ['RM', 'LM']);
+  const r2 = S.mergeImport(cur, { kind: 'backup', flights: { f1: clone(exported) } });
+  assert.deepEqual(r2.state.flights.f1.events.map((e) => e.tank), ['RM', 'LM']);
+  assert.match(r2.summary, /1 missing entry restored/);
+  assert.deepEqual(cur.flights.f1.events.map((e) => e.tank), ['LM'], 'import does not mutate the current state');
+});

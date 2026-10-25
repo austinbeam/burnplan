@@ -39,6 +39,15 @@ On every user-visible change, bump **both** `APP_VERSION` in `js/app.js` and `VE
 
 ## Domain rules Austin has set (don't regress these)
 
+### Logged events are never dropped or moved by app logic (hard rule)
+
+- A logged entry (switch, check, climb, anything in `f.events`) disappears only when the pilot deletes it, or by Undo start / Reactivate, which say so and ask first. Its time changes only by a manual edit. Rebuilds, plan versions, settings changes, migrations, updates and merges may never remove an entry or change its `at`. A rebuild can change the fuel burned over that time, never the logged time.
+- Why: on 2026-10-25 a logged switch vanished from an active flight. A second open copy of the app (installed app plus a browser tab, or two tabs) still held the log from before the switch and overwrote it when it saved; a new version loading makes every open copy save.
+- How it's enforced (`js/store.js`): every entry gets a stable `id` (`ensureIds`). `S.save` checks `rev`; if another copy saved meanwhile it merges (`reconcile`): entries, flights and fuelings that copy added are kept, and only tombstoned removals stay removed. Every deliberate removal must tombstone: `removedEvent(f, e)` for entries (`f.removedEvents`), `state.deletedFlights` / `state.deletedFuelings` for those. Copies also reload on the `storage` event and when brought to the front (`syncFromStorage`).
+- Edit and delete find the entry by id (`ui.sd.eid`), never by a stored array index, and confirm callbacks look the flight up again, since `state` can be replaced while a sheet is open.
+- Importing a flight file or backup that has a flight already on the phone adds its missing entries (a recovery path) and never removes any.
+- `test/ui/staletest.py` and the store tests in `test/planner.test.mjs` cover this. Any new code path that removes entries needs a tombstone and a test.
+
 ### Planning
 
 - Don't plan any tank below the floor (4 gal by default, a hard rule). "Ever is a strong word": this applies to planning, and the plan is still allowed to be overridden.

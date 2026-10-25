@@ -4,7 +4,7 @@ import * as S from './store.js';
 import { loadGuide } from './guide.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v38'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v39'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -17,8 +17,15 @@ for (const f of Object.values(state.flights || {})) {
   const extra = f.events.filter((e) => e.type === 'burn' && e.fromCheck);
   for (const b of extra) {
     const c = f.events.find((e) => e.type === 'check' && Math.abs(e.at - b.at) < 1000);
-    if (c) { c.gph = b.gph; c.setsBurn = true; f.events.splice(f.events.indexOf(b), 1); }
+    if (c) { c.gph = b.gph; c.setsBurn = true; f.events.splice(f.events.indexOf(b), 1); removedEvent(f, b); }
   }
+}
+// Every deliberate removal of a logged entry is tombstoned, so a merge with another copy's save
+// (S.save → S.reconcile) can tell "deleted on purpose" from "never seen here" and never drops an entry.
+function removedEvent(f, e) {
+  if (!e || !e.id) return;
+  f.removedEvents = f.removedEvents || [];
+  if (!f.removedEvents.includes(e.id)) f.removedEvents.push(e.id);
 }
 const ui = {
   route: 'setup', sub: null,
@@ -1221,7 +1228,7 @@ function openEdit(f, i, kind) {
   const e = i >= 0 ? f.events[i] : { type: kind, at: now() };
   ui.sheet = 'edit';
   const tmode = e.type === 'takeoff' ? 'clock' : (f.engineStart ? timeMode() : 'clock');
-  ui.sd = { fid: f.id, i, kind: e.type, tmode, enteredAt: now(), atStamp: now() };
+  ui.sd = { fid: f.id, i, eid: i >= 0 ? e.id : null, kind: e.type, tmode, enteredAt: now(), atStamp: now() };
   ui.sd.at = e.type === 'takeoff' ? hm(e.at) : (tmode === 'timer' ? durS(timerAt(f, e.at)) : hm(e.at));
   Object.assign(ui.sd, {
     tank: e.tank || f.cfg.tanks[0].id,
@@ -1244,9 +1251,16 @@ function afterHistoryEdit(f, reason) {
   persist();
 }
 
+// The entry being edited, found by its id: the log can change under an open sheet (another copy saved).
+function sheetEventIndex(f) {
+  if (ui.sd.i < 0) return -1;
+  return ui.sd.eid ? f.events.findIndex((e) => e.id === ui.sd.eid) : ui.sd.i;
+}
+
 function saveEdit() {
   const f = sheetFlight();
-  const k = ui.sd.kind, i = ui.sd.i;
+  const k = ui.sd.kind, i = sheetEventIndex(f);
+  if (ui.sd.i >= 0 && i < 0) { closeSheet(); render(); return toast('That entry changed in another window. Open it again.'); }
   if (k === 'engine') {
     const taxi = num(ui.sd.taxi);
     if (!(taxi >= 0)) return toast('Enter taxi minutes');
@@ -2301,7 +2315,7 @@ const actions = {
     const f = activeFlight();
     if (!f || f.status !== 'draft') return;
     ask('Discard this planned flight?', 'Discard', () => {
-      delete state.flights[f.id];
+      delete state.flights[f.id]; (state.deletedFlights = state.deletedFlights || []).push(f.id);
       state.activeFlightId = null; ui.draft = null;
       persist(); render();
     });
@@ -2373,9 +2387,16 @@ const actions = {
   editEvent(el) { const f = state.flights[el.dataset.fid]; openEdit(f, +el.dataset.i); },
   addEvent(el) { const f = state.flights[el.dataset.fid]; openEdit(f, -1, el.dataset.kind); },
   deleteEvent() {
-    const f = sheetFlight(), i = ui.sd.i;
-    const e = f.events[i];
-    ask(`Delete this ${EV_LABEL[e.type] || e.type} entry?`, 'Delete', () => { f.events.splice(i, 1); if (e.type === 'shutdown') { f.shutdown = null; f.finalUsed = null; } afterHistoryEdit(f, 'history edit'); toast('Deleted'); render(); });
+    const fid = ui.sd.fid, f0 = sheetFlight(), e0 = f0.events[sheetEventIndex(f0)];
+    if (!e0) { closeSheet(); render(); return toast('That entry changed in another window. Open it again.'); }
+    const id = e0.id;
+    ask(`Delete this ${EV_LABEL[e0.type] || e0.type} entry?`, 'Delete', () => {
+      const f = state.flights[fid], i = f ? f.events.findIndex((x) => x.id === id) : -1;
+      if (i < 0) { render(); return toast('Already gone'); }
+      const [e] = f.events.splice(i, 1); removedEvent(f, e);
+      if (e.type === 'shutdown') { f.shutdown = null; f.finalUsed = null; }
+      afterHistoryEdit(f, 'history edit'); toast('Deleted'); render();
+    });
   },
   planView(el) { state.settings.planView = el.dataset.v; persist(); render(); },
   exportFlight(el) {
@@ -2429,7 +2450,7 @@ const actions = {
     state.fuelDraft = { ...x, mode: x.mode || 'tanks', totalAdded: x.totalAdded == null ? '' : String(x.totalAdded), before: s(x.before), amounts: s(x.amounts), startReading: String(x.startReading), steps: steps.map((y) => ({ tank: y.tank, reading: String(y.reading) })), gaugeBefore: s(x.gaugeBefore), gaugeAfter: s(x.gaugeAfter), note: x.note || '', beforeLabel: null };
     persist(); go('fuel', 'edit');
   },
-  fuDelete(el) { const id = el.dataset.id; ask('Delete this fueling?', 'Delete', () => { delete state.fuelings[id]; persist(); go('fuel'); }); },
+  fuDelete(el) { const id = el.dataset.id; ask('Delete this fueling?', 'Delete', () => { delete state.fuelings[id]; (state.deletedFuelings = state.deletedFuelings || []).push(id); persist(); go('fuel'); }); },
   saveStart: () => saveSheet('start'),
   saveClimb: () => saveSheet('climb'),
   saveLevel: () => saveSheet('level'),
@@ -2483,8 +2504,11 @@ const actions = {
   sdUseGuess(el) { ui.sd.at = el.dataset.v; ui.sd.atStamp = now(); const i = $('#sd-at'); if (i) i.value = ui.sd.at; renderSheetPreview(); },
   sdLongOk() { ui.sd.longOk = true; renderSheetPreview(); },
   resetStart(el) {
-    const f = state.flights[el.dataset.id || state.activeFlightId];
+    const fid = el.dataset.id || state.activeFlightId;
     ask('Undo the start of this flight? Takeoff, switches, climbs, fuel checks and ETE updates are removed and it goes back to planned.', 'Undo start', () => {
+      const f = state.flights[fid];
+      if (!f) return;
+      for (const e of f.events) if (e.type !== 'gauge') removedEvent(f, e);
       f.events = f.events.filter((e) => e.type === 'gauge'); // calibration readings are kept
       f.engineStart = null; f.takeoff = null; f.startTank = null; f.shutdown = null; f.finalUsed = null;
       f.freezeAt = null; f.snoozeUntil = null; f.divert = null; f.autoEnded = false; f.autoSaved = false;
@@ -2520,13 +2544,16 @@ const actions = {
     download(`${APP_NAME.toLowerCase()}-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 1), 'application/json');
   },
   exportCsv(el) { const f = state.flights[el.dataset.id]; download(`${f.from || 'flight'}-${f.to || ''}-${new Date(f.engineStart || f.createdAt).toISOString().slice(0, 10)}.csv`, flightCsv(f), 'text/csv'); },
-  deleteFlight(el) { const id = el.dataset.id; ask('Delete this flight from the log?', 'Delete', () => { delete state.flights[id]; persist(); go('log'); }); },
+  deleteFlight(el) { const id = el.dataset.id; ask('Delete this flight from the log?', 'Delete', () => { delete state.flights[id]; (state.deletedFlights = state.deletedFlights || []).push(id); persist(); go('log'); }); },
   reactivate(el) {
     const cur = activeFlight();
     if (cur && cur.status === 'active') return toast('Another flight is in progress. End it on the Fly tab first.');
-    const f = state.flights[el.dataset.id];
+    const fid = el.dataset.id;
     ask(`Reactivate this flight? The shutdown is removed and it resumes as if you never shut down.`, 'Reactivate', () => {
+      const cur = activeFlight(), f = state.flights[fid];
+      if (!f) return;
       if (cur && cur.status === 'draft') cur.status = 'saved';
+      for (const e of f.events) if (e.type === 'shutdown') removedEvent(f, e);
       f.events = f.events.filter((e) => e.type !== 'shutdown');
       f.shutdown = null; f.finalUsed = null; f.freezeAt = null; f.autoEnded = false; f.autoSaved = false;
       f.snoozeUntil = now() + 30 * MIN;          // don't immediately re-run the landing check
@@ -2761,7 +2788,17 @@ async function importFile(input) {
 }
 
 window.addEventListener('hashchange', () => { readHash(); render(); });
+// Another copy of the app (second tab, or installed app plus a browser tab) saved: pick up its state so
+// this copy never works from, or saves, a stale log. Saves also merge (S.save), in case an event was missed.
+function syncFromStorage() {
+  if (S.storedRev() === (state.rev || 0)) return false;
+  state = S.load();
+  if (!ui.sheet) render();
+  return true;
+}
+window.addEventListener('storage', (e) => { if (e.key === null || e.key === 'burnplan.v1') syncFromStorage(); });
 document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') syncFromStorage();
   const f = activeFlight();
   if (document.visibilityState === 'visible') { if (checkIdle()) return; keepAwake(!!(f && f.status === 'active' && ui.route === 'fly')); render(); }
 });
