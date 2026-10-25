@@ -378,3 +378,77 @@ test('stepped descent, level between steps, landing then taxi-in', () => {
   assert.deepEqual(rs.segs.map((x) => x.phase), ['taxi']);
   assert.equal(rs.endMin, 15 + 115 + 5);
 });
+
+const byId = (id) => BUILTIN_TYPES.find((t) => t.id === id);
+
+test('built-in types: the PA-32 is unchanged and every type plans above its floors', () => {
+  const pa32 = byId('pa32');
+  assert.deepEqual(pa32.tanks.map((t) => [t.id, t.capacity]), [['LT', 17], ['LM', 25], ['RM', 25], ['RT', 17]]);
+  assert.deepEqual(pa32.fillOrder, ['LT', 'RT', 'LM', 'RM']);
+  assert.equal(pa32.burn.cruise, 15);
+  assert.equal(pa32.startTank, 'LM');
+  assert.equal(pa32.finishSide, 'R');
+  assert.equal(new Set(BUILTIN_TYPES.map((t) => t.id)).size, BUILTIN_TYPES.length);
+  for (const ty of BUILTIN_TYPES) {
+    const cfg = P.resolveConfig(ty);
+    const levels = Object.fromEntries(cfg.tanks.map((t) => [t.id, t.capacity]));
+    // A two-hour flight at the type's own cruise burn.
+    const totalFuel = (20 / 60) * cfg.burn.ground + (120 / 60) * cfg.burn.cruise;
+    const r = plan(cfg, { taxiMin: 20, eteMin: 120, totalFuel, levels });
+    assert.equal(r.g.short, null, ty.id);
+    for (const row of r.c.rows) for (const id of P.tanksOf(cfg, row.tank)) assert.ok(row.levels[id] >= cfg.rules.floor.gal - P.TOL, `${ty.id} ${id} ${row.levels[id]}`);
+    assert.ok(!r.c.issues.some((i) => i.severity === 'error'), `${ty.id} ${JSON.stringify(r.c.issues)}`);
+    assert.ok(cfg.fillOrder.every((id) => cfg.tanks.some((t) => t.id === id)), ty.id);
+  }
+});
+
+test('selector BOTH: plans run on Both, burn splits evenly, floors hold', () => {
+  const cfg = P.resolveConfig(byId('c172s'));
+  assert.deepEqual(P.selectable(cfg).map((t) => t.id), ['L', 'BOTH', 'R']);
+  assert.deepEqual(P.selectable(P.resolveConfig(byId('pa28-181'))).map((t) => t.id), ['L', 'R']);
+  const r = plan(cfg, { taxiMin: 10, eteMin: 150, totalFuel: 25, levels: { L: 26.5, R: 26.5 } });
+  assert.deepEqual(r.g.legs.map((l) => l.tank), ['BOTH']);
+  assert.ok(Math.abs(r.c.rows[0].levels.L - r.c.rows[0].levels.R) < 1e-6);
+  assert.ok(Math.abs(r.c.rows[0].after - (53 - r.c.rows[0].fuel)) < 1e-6);
+  assert.ok(!r.c.issues.some((i) => i.severity === 'error'), JSON.stringify(r.c.issues));
+  // Too long a flight: Both stops at the floors and the rest is a shortfall, never below 4 gal.
+  const long = plan(cfg, { taxiMin: 10, eteMin: 330, totalFuel: 50, levels: { L: 26.5, R: 26.5 } });
+  assert.ok(long.g.short, 'should be short');
+  for (const row of long.c.rows) for (const id of ['L', 'R']) assert.ok(row.levels[id] >= 4 - P.TOL, `${id} ${row.levels[id]}`);
+  // A plan that takes off on a single tank is flagged (POH: Both for takeoff and landing).
+  const c = P.checkPlan({ cfg, segs: r.tl.segments, legs: [{ tank: 'L', min: r.tl.blockMin }], levels: { L: 26.5, R: 26.5 }, startMin: 0, endMin: r.tl.blockMin });
+  assert.ok(c.issues.some((i) => i.rule === 'takeoff'));
+  assert.ok(c.issues.some((i) => i.rule === 'landing'));
+});
+
+test('selector BOTH: rebuild on a single tank burns the heavy side down, then Both', () => {
+  const cfg = P.resolveConfig(byId('c182t'));
+  const segs = [{ phase: 'cruise', start: 60, min: 120, gph: 13 }];
+  const g = P.generatePlan({ cfg, segs, startMin: 60, endMin: 180, levels: { L: 35, R: 30 }, currentTank: 'L', requiredLanding: P.reserveGal(cfg) });
+  assert.deepEqual(g.legs.map((l) => l.tank), ['L', 'BOTH']);
+  assert.ok(Math.abs(g.legs[0].fuel - 5) < 0.05, g.legs[0].fuel);
+  // On the light side, go straight back to Both.
+  const g2 = P.generatePlan({ cfg, segs, startMin: 60, endMin: 180, levels: { L: 30, R: 35 }, currentTank: 'L' });
+  assert.deepEqual(g2.legs.map((l) => l.tank), ['BOTH']);
+});
+
+test('selector BOTH: estimate splits burn, keeps feeding from the other tank, and a check spreads over both', () => {
+  const cfg = P.resolveConfig(byId('c172s'));
+  const t0 = Date.UTC(2026, 9, 25, 15, 0);
+  const m = 60000;
+  const segs = [{ phase: 'cruise', start: 0, min: 600, gph: 10 }];
+  const flight = { engineStart: t0, takeoff: t0, startLevels: { L: 26.5, R: 26.5 }, startTank: 'BOTH', segs, events: [] };
+  const e = P.estimate(flight, cfg, t0 + 60 * m);
+  assert.ok(Math.abs(e.levels.L - 21.5) < 1e-6 && Math.abs(e.levels.R - 21.5) < 1e-6, JSON.stringify(e.levels));
+  assert.equal(e.active, 'BOTH');
+  const lop = { ...flight, startLevels: { L: 2, R: 26.5 } };
+  const e2 = P.estimate(lop, cfg, t0 + 60 * m);
+  assert.ok(Math.abs(e2.levels.L) < 1e-6 && Math.abs(e2.levels.R - 18.5) < 1e-6, JSON.stringify(e2.levels));
+  assert.equal(e2.empty, null);
+  flight.events.push({ type: 'check', at: t0 + 60 * m, used: 12 });
+  const e3 = P.estimate(flight, cfg, t0 + 60 * m);
+  assert.ok(Math.abs(e3.levels.L - 20.5) < 1e-6 && Math.abs(e3.levels.R - 20.5) < 1e-6, JSON.stringify(e3.levels));
+  flight.events.push({ type: 'switch', tank: 'R', at: t0 + 60 * m });
+  const e4 = P.estimate(flight, cfg, t0 + 90 * m);
+  assert.ok(Math.abs(e4.levels.R - 15.5) < 1e-6 && Math.abs(e4.levels.L - 20.5) < 1e-6, JSON.stringify(e4.levels));
+});

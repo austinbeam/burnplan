@@ -32,6 +32,34 @@ export function resolveConfig(type, tail, flightOverrides) {
 
 export function tankMap(cfg) { return Object.fromEntries(cfg.tanks.map((t) => [t.id, t])); }
 
+// Selector BOTH (types with cfg.both, e.g. Cessna high-wings): one selector position fed from
+// several tanks at once. It is not a tank: levels never hold a BOTH key, and burn is split.
+export const BOTH = 'BOTH';
+export const tanksOf = (cfg, id) => (id === BOTH && cfg.both ? cfg.both : [id]);
+// What the pilot can select: the tanks, plus Both (between the left and right tanks) when the type has it.
+export function selectable(cfg) {
+  if (!cfg.both) return cfg.tanks;
+  const left = cfg.tanks.filter((t) => t.side === 'L');
+  return [...left, { id: BOTH, name: 'Both', side: 'C', spot: 'center', capacity: cfg.both.reduce((a, id) => a + tankMap(cfg)[id].capacity, 0), takeoffLanding: true, both: true }, ...cfg.tanks.filter((t) => t.side !== 'L')];
+}
+export const feedLevel = (cfg, levels, id) => tanksOf(cfg, id).reduce((a, k) => a + (levels[k] ?? 0), 0);
+// Split a burn over the tanks a selector position feeds from: equal shares, and with `cap` a tank
+// that runs dry passes the rest of its share to the others. Returns { tankId: gal }.
+export function splitBurn(cfg, lv, id, fuel, cap = false) {
+  const ks = tanksOf(cfg, id);
+  if (ks.length === 1) return { [id]: cap ? Math.min(fuel, Math.max(0, lv[id] ?? 0)) : fuel };
+  const out = Object.fromEntries(ks.map((k) => [k, 0]));
+  if (!cap) { for (const k of ks) out[k] = fuel / ks.length; return out; }
+  let left = fuel, open = ks.filter((k) => lv[k] > EPS);
+  while (left > EPS && open.length) {
+    const share = left / open.length;
+    for (const k of open) { const take = Math.min(share, lv[k] - out[k]); out[k] += take; left -= take; }
+    open = open.filter((k) => lv[k] - out[k] > EPS);
+  }
+  return out;
+}
+const applyBurn = (lv, parts, sign = 1) => { for (const k in parts) lv[k] -= sign * parts[k]; };
+
 export function reserveGal(cfg) {
   const r = cfg.rules.reserve;
   if (!r || r.mode === 'off') return 0;
@@ -161,6 +189,21 @@ export function generatePlan({ cfg, segs, startMin = 0, endMin, levels, currentT
     else fuelLegs.push({ tank, fuel });
   };
 
+  // Selector BOTH: the plan runs on Both. In flight on a single tank, stay on it only while it is the
+  // heavier side (that is what the single tank is for), then go back to Both.
+  const both = cfg.both && cfg.both.every((id) => !parked.includes(id)) ? cfg.both : null;
+  if (both && rem > EPS) {
+    if (currentTank && both.includes(currentTank)) {
+      const s = side(currentTank);
+      const imb = sideTotal(s) - sideTotal(flip(s));
+      const heavy = imb > 1 ? Math.min(rem, usable(currentTank), imb) : 0;
+      if (heavy > EPS) { lv[currentTank] -= heavy; rem -= heavy; push(currentTank, heavy); }
+    }
+    const b = Math.min(rem, Math.min(...both.map(usable)) * both.length);
+    if (b > EPS) { for (const id of both) lv[id] -= b / both.length; rem -= b; push(BOTH, b); }
+    currentTank = null;
+  }
+
   let gStart = 0;
   if (currentTank) { const i = groups.findIndex((g) => g.left === currentTank || g.right === currentTank); if (i >= 0) gStart = i; }
   let lastGroupUsed = -1;
@@ -178,7 +221,7 @@ export function generatePlan({ cfg, segs, startMin = 0, endMin, levels, currentT
     let rL = bL, rR = bR;
     let s;
     if (gi === gStart && currentTank && (currentTank === g.left || currentTank === g.right)) s = side(currentTank);
-    else if (gi === 0 && cfg.startTank) s = side(cfg.startTank);
+    else if (gi === 0 && tm[cfg.startTank]) s = side(cfg.startTank);
     else s = 'L';
     lastGroupUsed = gi;
     lastGroupLegStart = fuelLegs.length;
@@ -268,22 +311,24 @@ export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requi
   legs.forEach((leg, i) => {
     const start = t;
     const fuel = fuelBetween(segs, start, start + leg.min);
-    lv[leg.tank] -= fuel;
+    applyBurn(lv, splitBurn(cfg, lv, leg.tank, fuel));
     t = start + leg.min;
     const L = sideTot('L'), R = sideTot('R');
     const imb = L - R;
     maxImb = Math.max(maxImb, Math.abs(imb));
     const flags = [];
-    if (lv[leg.tank] < -TOL) { flags.push('empty'); add('empty', 'error', i, `${leg.tank} runs dry`); }
-    else if (lv[leg.tank] < r.floor.gal - TOL) { flags.push('floor'); add('floor', sev(r.floor.mode), i, `${leg.tank} below ${r.floor.gal} gal floor`); }
+    const fed = tanksOf(cfg, leg.tank);
+    const dry = fed.find((k) => lv[k] < -TOL), low = fed.find((k) => lv[k] < r.floor.gal - TOL);
+    if (dry) { flags.push('empty'); add('empty', 'error', i, `${dry} runs dry`); }
+    else if (low) { flags.push('floor'); add('floor', sev(r.floor.mode), i, `${low} below ${r.floor.gal} gal floor`); }
     if (Math.abs(imb) > r.imbalance.gal + TOL) { flags.push('imbalance'); add('imbalance', sev(r.imbalance.mode), i, `Imbalance ${Math.abs(imb).toFixed(1)} gal > ${r.imbalance.gal}`); }
     const gi = groupOf(leg.tank);
     if (gi >= 0 && gi < lastGroup) { flags.push('sequence'); add('sequence', 'warn', i, `${leg.tank} after a later tank group`); }
     if (gi > lastGroup) lastGroup = gi;
     if (i > 0 && i < legs.length - 1 && leg.min < (r.minLegMin || 0)) { flags.push('short'); add('shortleg', 'info', i, `Leg ${i + 1} is ${Math.round(leg.min)} min`); }
-    if (parked.includes(leg.tank) && leg.min > 0.5) { flags.push('parked'); add('parked', 'warn', i, `${leg.tank} is marked done for this flight`); }
+    if (fed.some((k) => parked.includes(k)) && leg.min > 0.5) { flags.push('parked'); add('parked', 'warn', i, `${leg.tank} is marked done for this flight`); }
     if (i > 0 && legs[i - 1].tank === leg.tank) { flags.push('dup'); add('dup', 'info', i, `Leg ${i + 1} repeats ${leg.tank}`); }
-    rows.push({ ...leg, startMin: start, fuel, after: lv[leg.tank], levels: { ...lv }, L, R, imb, flags });
+    rows.push({ ...leg, startMin: start, fuel, after: feedLevel(cfg, lv, leg.tank), levels: { ...lv }, L, R, imb, flags });
   });
 
   if (fromEngineStart && legs.length && cfg.startTank && legs[0].tank !== cfg.startTank) add('sequence', 'warn', 0, `Starts on ${legs[0].tank}, not ${cfg.startTank}`);
@@ -299,7 +344,7 @@ export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requi
   }
   // Landing fuel: extend to arrival if the plan stops short (on the last tank).
   let landLv = { ...lv };
-  if (t < endMin && legs.length) landLv[legs[legs.length - 1].tank] -= fuelBetween(segs, t, endMin);
+  if (t < endMin && legs.length) applyBurn(landLv, splitBurn(cfg, landLv, legs[legs.length - 1].tank, fuelBetween(segs, t, endMin)));
   const landing = ids.reduce((a, i) => a + landLv[i], 0);
   if (requiredLanding > 0 && landing < requiredLanding - TOL) add('reserve', sev(r.reserve.mode), legs.length - 1, `Lands with ${landing.toFixed(1)}; reserve needs ${requiredLanding.toFixed(1)}`);
   const landImb = ids.filter((i) => tm[i].side === 'L').reduce((a, i) => a + landLv[i], 0) - ids.filter((i) => tm[i].side === 'R').reduce((a, i) => a + landLv[i], 0);
@@ -439,7 +484,7 @@ export function estimate(flight, cfg, T0) {
         }
         if (Math.abs(delta) > EPS) {
           if (tot > EPS) for (const id of ids) lv[id] -= (delta * sinceCheck[id]) / tot;
-          else lv[active] -= delta;
+          else applyBurn(lv, splitBurn(cfg, lv, active, delta));
         }
         used = e.used;
         sinceCheck = Object.fromEntries(ids.map((i) => [i, 0]));
@@ -450,15 +495,15 @@ export function estimate(flight, cfg, T0) {
     const b = points[p + 1];
     const rate = rateAtMs(flight, a);
     const want = (rate * (b - a)) / 3.6e6;
-    const avail = Math.max(0, lv[active]);
+    const avail = tanksOf(cfg, active).reduce((x, k) => x + Math.max(0, lv[k]), 0);
     let burn = want;
     if (want > avail + EPS) {
       burn = avail;
       if (!empty) empty = { tank: active, at: rate > 0 ? a + (avail / rate) * 3.6e6 : a };
     }
-    lv[active] -= burn;
-    sinceCheck[active] += burn;
-    if (phaseAt(flight, a).phase === 'climb') climbSince[active] += burn;
+    const parts = splitBurn(cfg, lv, active, burn, true);
+    const climbing = phaseAt(flight, a).phase === 'climb';
+    for (const k in parts) { lv[k] -= parts[k]; sinceCheck[k] += parts[k]; if (climbing) climbSince[k] += parts[k]; }
     used += burn;
   }
   const total = ids.reduce((x, i) => x + lv[i], 0);

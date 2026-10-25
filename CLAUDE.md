@@ -6,7 +6,7 @@ Fuel tank switching planner and in-flight tracker. Built for Austin's Piper PA-3
 
 - Vanilla JS ES modules with no build step and no dependencies. It is an offline-first PWA.
 - `index.html`, `app.css`, `manifest.webmanifest`, `sw.js`, `icons/`
-- `js/types.js`: the built-in aircraft types (`BUILTIN_TYPES`), shared by every user.
+- `js/types.js`: the built-in aircraft types (`BUILTIN_TYPES`), shared by every user. See "Built-in types" below.
 - `js/planner.js`: pure logic, no DOM. Covers timeline, plan generation, rule checks, in-flight estimation, phases and fueling math. Unit tested.
 - `js/store.js`: localStorage under the key `burnplan.v1`. Also handles backup import and merge.
 - `js/app.js`: all UI (views, sheets, actions, field handlers, alerts, ticker). It is large; grep for `function viewX` / `function sheetX` / action names.
@@ -42,6 +42,20 @@ On every user-visible change, bump **both** `APP_VERSION` in `js/app.js` and `VE
 - The user can edit the plan freely, and broken rules are flagged rather than blocked. Planning changes and actual events are kept separate. Every plan change is versioned (`setPlan(f, plan, reason)` archives the old one).
 - All four tanks are approved for takeoff and landing on this airplane; this is configurable per type.
 - Rules and tanks are configurable per type and per tail (tail overrides). Custom types are possible.
+
+### Built-in types
+
+- `pa32` is Austin's airplane (N12345). Don't change its id or values when touching other types.
+- The other built-ins (Cessna 172/182/206H/210, PA-28 Warrior/Archer/Arrow, Saratoga, A36, SR22, M20J) are made by `twoTank()` from typical POH values Austin approved on 2026-10-25. They are typical numbers, not checked against each POH: imbalance limits are conventions (except the SR22's 10 gal), and the Saratoga and A36 tab levels were not verified. Floor is 4 gal hard and reserve 60 min on all of them. Finish side is unset (`finishSide: null`), and the minimum leg is 30 min.
+- Adding a tail asks for the cruise gph, prefilled with the type's number. If it differs, it's saved as the tail override `burn.cruise`. This number sets the reserve and is the planning fallback when ForeFlight fuel is blank. It is never applied in flight.
+- Settings → Aircraft types has **Request an aircraft type**, which opens a prefilled GitHub issue form. It carries only the app version, never any flight or tail data.
+
+### Selector BOTH
+
+- A type with `both: ['L', 'R']` has a BOTH selector position (the 172, 182 and 206H). The id `P.BOTH` ('BOTH') can be a leg tank, a switch tank or `startTank`. It is never a key in `levels`.
+- Burn on Both splits equally (`splitBurn`). In the estimate, if one tank runs dry the other keeps feeding. GI 275 corrections spread over whichever tanks actually burned.
+- Plans run on Both. During a rebuild while on a single tank, the plan stays on that tank only while it's the heavier side, then goes back to Both. On these types L and R are `takeoffLanding: false`, so a plan that takes off or lands on a single tank is flagged.
+- The UI shows Both only for these types: a BOTH button between the gauges, and BOTH in the tank pickers (`P.selectable(cfg)`). Every other type looks exactly as it did before.
 
 ### Timeline
 
@@ -107,7 +121,7 @@ A flight (`state.flights[id]`) stores:
 - `engineStart` and `takeoff` timestamps, `timerFrom`, `tz`, `status` (draft/active/closed), `shutdown`, `freezeAt`.
 - `events[]`.
 
-Event types: `engine`, `takeoff`, `climb` {gph, until, initial}, `level`, `descent` {gph, until?}, `landing`, `switch` {tank, catchup, planned}, `check` {used, gph, setsBurn}, `burn` {gph, scope 'all'?}, `ete` {eteMin, fuelToDest, gph, gphSet, divert, altFuel}, `shutdown`, `reactivate`, `gauge` {readings, note, phase}, `note`, `park` / `unpark` {tank}.
+Leg and switch tanks are tank ids, or `BOTH` on types with a BOTH selector (use `P.tanksOf` / `P.feedLevel`, not `levels[tank]`). Event types: `engine`, `takeoff`, `climb` {gph, until, initial}, `level`, `descent` {gph, until?}, `landing`, `switch` {tank, catchup, planned}, `check` {used, gph, setsBurn}, `burn` {gph, scope 'all'?}, `ete` {eteMin, fuelToDest, gph, gphSet, divert, altFuel}, `shutdown`, `reactivate`, `gauge` {readings, note, phase}, `note`, `park` / `unpark` {tank}.
 
 `estimate(flight, cfg, T)` replays the events to get the levels at time T. It never burns a tank below empty, and it stops at shutdown or `freezeAt`. `remainingSegs(flight, T)` builds the rest of the timeline (and returns `landMin`) for rebuilds.
 

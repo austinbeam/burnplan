@@ -3,7 +3,7 @@ import * as P from './planner.js';
 import * as S from './store.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v31'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v32'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -123,6 +123,7 @@ function cfgForTail(tailId, flightOv) {
 const sideCls = (cfg, id) => ((cfg.tanks.find((t) => t.id === id) || {}).side === 'R' ? 'tankR' : 'tankL');
 // One distinct color per tank: left = cool (main blue, tip cyan), right = warm (main orange, tip yellow), center grey.
 function tankColor(cfg, id) {
+  if (id === P.BOTH && cfg.both) return 'var(--tk-c)';
   const t = cfg.tanks.find((x) => x.id === id);
   if (!t) return 'var(--mut)';
   const outer = t.spot === 'tip' || t.spot === 'outboard';
@@ -616,11 +617,17 @@ function buildPlanFromDraft() {
 }
 
 // ---------- aircraft/tail creation form (shared) ----------
+// The cruise gph sets the reserve and is the plan's fallback when ForeFlight fuel is blank, so the
+// pilot confirms it here rather than taking the type's typical number unseen.
 function tailForm() {
+  const types = allTypes();
   return `<div class="grid2">
     <div class="field"><label for="nt-tail">Tail number</label><input id="nt-tail" class="mono" placeholder="N12345" autocapitalize="characters"></div>
-    <div class="field"><label for="nt-type">Type</label><select id="nt-type">${allTypes().map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}</select></div>
-  </div><button class="btn primary block" data-act="addTail">Add aircraft</button>`;
+    <div class="field"><label for="nt-type">Type</label><select id="nt-type" data-nt-type>${types.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}</select></div>
+  </div>
+  <div class="field"><label for="nt-cruise">Your cruise burn (gph)</label><input id="nt-cruise" class="mono" value="${types[0]?.burn.cruise ?? ''}" inputmode="decimal"></div>
+  <div class="mut small">Prefilled with the type's typical number. Enter what your engine burns at your usual cruise: it sets the reserve and the plan's cruise when ForeFlight fuel is blank. In flight, burn only changes from what you enter.</div>
+  <button class="btn primary block" data-act="addTail">Add aircraft</button>`;
 }
 
 // =====================================================================
@@ -720,7 +727,7 @@ function viewPlan() {
         const isNow = active && nowMin >= r.startMin && nowMin < r.startMin + r.min;
         return `<div class="legrow ${isNow ? 'now' : ''}">
           <span class="${bad.length ? 'flag' : 'mut'}">${bad.length ? '!' : i + 1}</span>
-          <select aria-label="Leg ${i + 1} tank" data-leg-tank="${i}" style="color:${colorOf(r.tank)};font-weight:600">${cfg.tanks.map((t) => `<option ${t.id === r.tank ? 'selected' : ''}>${esc(t.id)}</option>`).join('')}</select>
+          <select aria-label="Leg ${i + 1} tank" data-leg-tank="${i}" style="color:${colorOf(r.tank)};font-weight:600">${P.selectable(cfg).map((t) => `<option ${t.id === r.tank ? 'selected' : ''}>${esc(t.id)}</option>`).join('')}</select>
           <span>${timeLbl(r.startMin)}</span>
           <input aria-label="Leg ${i + 1} minutes" data-leg-min="${i}" value="${Math.round(r.min)}" inputmode="numeric">
           <span>${f1(r.fuel)}</span>
@@ -766,7 +773,7 @@ function actualLegs(f, until = now(), cutAtPlan = true) {
   return out.filter((l) => l.start < cut && l.end - l.start >= 0.5 * MIN).map((l) => {
     const e1 = P.estimate(f, f.cfg, l.start), e2 = P.estimate(f, f.cfg, l.end);
     const side = (s) => f.cfg.tanks.filter((x) => x.side === s).reduce((a, x) => a + e2.levels[x.id], 0);
-    return { ...l, end: Math.min(l.end, cut), fuel: e1.levels[l.tank] - e2.levels[l.tank], after: e2.levels[l.tank], imb: side('L') - side('R') };
+    return { ...l, end: Math.min(l.end, cut), fuel: P.feedLevel(f.cfg, e1.levels, l.tank) - P.feedLevel(f.cfg, e2.levels, l.tank), after: P.feedLevel(f.cfg, e2.levels, l.tank), imb: side('L') - side('R') };
   });
 }
 
@@ -854,6 +861,9 @@ function gauge(cfg, t, level, on, done = false) {
     <div class="g">${f1(level)}</div><div class="of">of ${t.capacity}</div></button>`;
 }
 
+// Selector BOTH (only on types that have it): sits between the left and right gauges.
+const bothButton = (on) => `<button type="button" class="bothbtn ${on ? 'on' : ''}" data-act="tapTank" data-tank="${P.BOTH}" aria-label="Both tanks${on ? ', selected now' : ', tap to record a switch'}">BOTH${on ? '<span>ON</span>' : ''}</button>`;
+
 function renderFlyLive() {
   const box = $('#flyLive');
   const f = activeFlight();
@@ -866,6 +876,7 @@ function renderFlyLive() {
   const side = (arr) => arr.reduce((a, t) => a + est.levels[t.id], 0);
   const SL = side(L), SR = side(R), imb = SL - SR;
   const parked = P.parkedTanks(f, T);
+  const onNow = (id) => P.tanksOf(cfg, est.active).includes(id);
   const el = $('#elapsed'); if (el && f.engineStart) el.textContent = fmtTimerS(timerAt(f, now())); // header is always the live timer
   const z = $('#flyZ'); if (z) z.textContent = flyMode(f) === 'timer' ? `${hm(T)} · ${zt(T)}` : zt(T);
 
@@ -940,7 +951,7 @@ function renderFlyLive() {
   }
 
   box.innerHTML = `<div class="plane">${planeSvg(cfg)}
-      <div class="gauges">${L.map((t) => gauge(cfg, t, est.levels[t.id], t.id === est.active, parked.includes(t.id))).join('')}<div class="mid"></div>${C.map((t) => gauge(cfg, t, est.levels[t.id], t.id === est.active, parked.includes(t.id))).join('')}${C.length ? '<div class="mid"></div>' : ''}${R.map((t) => gauge(cfg, t, est.levels[t.id], t.id === est.active, parked.includes(t.id))).join('')}</div>
+      <div class="gauges">${L.map((t) => gauge(cfg, t, est.levels[t.id], onNow(t.id), parked.includes(t.id))).join('')}<div class="mid">${cfg.both ? bothButton(est.active === P.BOTH) : ''}</div>${C.map((t) => gauge(cfg, t, est.levels[t.id], onNow(t.id), parked.includes(t.id))).join('')}${C.length ? '<div class="mid"></div>' : ''}${R.map((t) => gauge(cfg, t, est.levels[t.id], onNow(t.id), parked.includes(t.id))).join('')}</div>
     </div>
     <div class="sides"><div><span class="mut">Left</span><span class="v">${f1(SL)}</span></div><div class="tot" style="align-items:center"><span class="mut">Total</span><span class="v">${f1(est.total)}</span></div><div style="align-items:flex-end"><span class="mut">Right</span><span class="v">${f1(SR)}</span></div></div>
     <div class="mut small" style="text-align:center;margin-top:10px;line-height:1.4">Imbalance ${f1(Math.abs(imb))} gal${Math.abs(imb) > 0.4 ? ` (${imb < 0 ? 'left' : 'right'} light)` : ''} · limit ${cfg.rules.imbalance.gal} · dashed line = ${cfg.rules.floor.gal} gal floor</div>
@@ -1029,11 +1040,11 @@ function startLooksWrong(f, takeoffMs) {
 const hrsMins = (m) => `${Math.floor(m / 60)} h ${String(Math.round(m % 60)).padStart(2, '0')} min`;
 
 function sheetStart(f) {
-  const tanks = f.cfg.tanks;
+  const tanks = P.selectable(f.cfg);
   const rows = ui.sd.rows || [];
   const manual = ui.sd.sofar === 'manual';
   return ['Start flight', `${timeField('sd-at', (tm) => (tm === 'timer' ? 'Flight timer right now (h:mm:ss)' : `Takeoff time (${clockLabel()} clock)`))}
-    <div class="field"><label>Takeoff tank</label><div class="tankpick">${tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span><span class="s">${f1(f.startLevels[t.id])}</span></button>`).join('')}</div></div>
+    <div class="field"><label>Takeoff tank</label><div class="tankpick">${tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span><span class="s">${f1(P.feedLevel(f.cfg, f.startLevels, t.id))}</span></button>`).join('')}</div></div>
     <div class="field"><span class="lbl">Since takeoff</span><div class="grid2">
       <button class="btn ${!manual ? 'outline' : ''}" data-act="sdSofar" data-v="plan" aria-pressed="${!manual}">Followed the plan</button>
       <button class="btn ${manual ? 'outline' : ''}" data-act="sdSofar" data-v="manual" aria-pressed="${manual}">Enter what I did</button></div></div>
@@ -1085,13 +1096,13 @@ function manualSwitches(takeoff, tank0) {
 function sheetSwitch(f) {
   const est = P.estimate(f, f.cfg, now());
   return ['Record actual switch', `
-    <div class="field"><label>From ${esc(est.active)} to</label><div class="tankpick">${f.cfg.tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}" ${t.id === est.active ? 'disabled' : ''}><span class="t">${esc(t.id)}</span><span class="s">${t.id === est.active ? 'current' : ui.sd.planned?.tank === t.id ? 'planned' : f1(est.levels[t.id])}</span></button>`).join('')}</div></div>
+    <div class="field"><label>From ${esc(est.active)} to</label><div class="tankpick">${P.selectable(f.cfg).map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}" ${t.id === est.active ? 'disabled' : ''}><span class="t">${esc(t.id)}</span><span class="s">${t.id === est.active ? 'current' : ui.sd.planned?.tank === t.id ? 'planned' : f1(P.feedLevel(f.cfg, est.levels, t.id))}</span></button>`).join('')}</div></div>
     ${timeField('sd-at', 'Switched at', ui.sd.at)}
     <div class="row between card" style="padding:10px 12px"><div class="stack" style="gap:2px"><span class="lbl">Entered at</span><span class="mono" style="font-size:18px" id="sdEntered">${tz(ui.sd.enteredAt)}</span></div><button class="btn sm outline" data-act="stampEntered" style="height:44px">Stamp now</button></div>
     <div id="sheetPreview"></div>
     <label class="check"><input type="checkbox" data-sd="rebuild" ${ui.sd.rebuild ? 'checked' : ''}>Rebuild rest of plan from this switch</label>
     <button class="btn primary block" data-act="saveSwitch">Save switch</button>
-    ${ui.sd.tank ? `<button class="btn sm outline" data-act="toggleDone" data-tank="${esc(ui.sd.tank)}" style="align-self:flex-start">${P.parkedTanks(f).includes(ui.sd.tank) ? `Use ${esc(ui.sd.tank)} again` : `Done with ${esc(ui.sd.tank)} for this flight`}</button>` : ''}`];
+    ${ui.sd.tank && ui.sd.tank !== P.BOTH ? `<button class="btn sm outline" data-act="toggleDone" data-tank="${esc(ui.sd.tank)}" style="align-self:flex-start">${P.parkedTanks(f).includes(ui.sd.tank) ? `Use ${esc(ui.sd.tank)} again` : `Done with ${esc(ui.sd.tank)} for this flight`}</button>` : ''}`];
 }
 
 function sheetCheck(f) {
@@ -1132,11 +1143,11 @@ function sheetEdit(f) {
   let fields = '';
   if (k === 'engine') {
     fields = `<div class="field"><label for="sd-taxi">Taxi minutes before takeoff</label><input id="sd-taxi" class="big key" data-sd="taxi" value="${esc(ui.sd.taxi)}" inputmode="numeric"></div>
-      <div class="field"><label>Taxi tank</label><div class="tankpick">${f.cfg.tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span></button>`).join('')}</div></div>`;
+      <div class="field"><label>Taxi tank</label><div class="tankpick">${P.selectable(f.cfg).map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span></button>`).join('')}</div></div>`;
   } else {
     fields = timeField('sd-at', k === 'takeoff' ? (tm) => (tm === 'timer' ? 'Flight timer right now' : `Takeoff time (${clockLabel()} clock)`) : k === 'climb' ? 'Climb started' : k === 'switch' ? 'Switched at' : 'At');
     if (k === 'takeoff') fields += `<label class="check"><input type="checkbox" data-sd="shift" ${ui.sd.shift ? 'checked' : ''}>Keep my other entries at the same flight timer readings</label>`;
-    if (k === 'switch') fields += `<div class="field"><label>Switched to</label><div class="tankpick">${f.cfg.tanks.map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span></button>`).join('')}</div></div>`;
+    if (k === 'switch') fields += `<div class="field"><label>Switched to</label><div class="tankpick">${P.selectable(f.cfg).map((t) => `<button data-act="sdTank" data-tank="${esc(t.id)}" class="${ui.sd.tank === t.id ? 'sel' : ''}"><span class="t">${esc(t.id)}</span></button>`).join('')}</div></div>`;
     if (k === 'climb') fields += `<div class="grid2"><div class="field"><label for="sd-len">Climb length</label><input id="sd-len" class="big" data-fmt="hm" data-sd="len" value="${esc(ui.sd.len)}" inputmode="numeric" placeholder="still climbing"></div>
       <div class="field"><label for="sd-cgph">Climb gph</label><input id="sd-cgph" class="big" data-sd="gph" value="${esc(ui.sd.gph)}" inputmode="decimal"></div></div>`;
     if (k === 'gauge') fields += `<div class="grid4">${f.cfg.tanks.map((t) => `<div class="field"><label for="g-${t.id}">${esc(t.id)} <span class="dim">/${t.capacity}</span></label><input id="g-${t.id}" class="mono" data-gauge="${esc(t.id)}" value="${esc(ui.sd.vals?.[t.id] ?? '')}" inputmode="decimal"></div>`).join('')}</div>
@@ -1500,9 +1511,11 @@ function saveSheet(kind) {
   let later = null, msg = '';
   if (kind === 'switch') {
     if (!ui.sd.tank) return toast('Pick a tank');
-    f.events.push({ type: 'switch', tank: ui.sd.tank, at: t, enteredAt, planned: ui.sd.planned ? { tank: ui.sd.planned.tank, at: ui.sd.planned.start } : null });
+    // A timer field rounds to the second, so "now" can land up to half a second ahead; keep it now so the switch shows at once.
+    const at = t > now() && t - now() < 1000 ? now() : t;
+    f.events.push({ type: 'switch', tank: ui.sd.tank, at, enteredAt, planned: ui.sd.planned ? { tank: ui.sd.planned.tank, at: ui.sd.planned.start } : null });
     if (ui.sd.rebuild) later = [Math.max(t, now()), 'after switch'];
-    msg = `Switched to ${ui.sd.tank} at ${fmtTimer(timerAt(f, t))}`;
+    msg = `Switched to ${ui.sd.tank} at ${fmtTimer(timerAt(f, at))}`;
   }
   if (kind === 'check') {
     const u = num(ui.sd.used);
@@ -1989,6 +2002,30 @@ const OVR_FIELDS = [
 ];
 const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
 
+// A new GitHub issue with a blank request form. Only the app version goes in; no user data.
+function typeRequestUrl() {
+  const body = [
+    'Aircraft make and model (and years or variant):',
+    '',
+    'Tanks (name, usable gal each, which side):',
+    '',
+    'Fuel selector positions (e.g. L / R / BOTH / OFF):',
+    '',
+    'Tanks approved for takeoff and landing:',
+    '',
+    'POH fill order and tab levels, if any:',
+    '',
+    'Typical burns, gph (ground / climb / cruise / descent):',
+    '',
+    'POH limits (fuel imbalance, takeoff minimums, other):',
+    '',
+    'Source (POH section or page):',
+    '',
+    `Burnplan ${APP_VERSION}`
+  ].join('\n');
+  return `https://github.com/austinbeam/burnplan/issues/new?title=${encodeURIComponent('Aircraft type request: ')}&body=${encodeURIComponent(body)}`;
+}
+
 function viewAircraft() {
   if (ui.sub && ui.sub.startsWith('type-')) return viewTypeEditor(ui.sub.slice(5));
   if (ui.sub && state.tails[decodeURIComponent(ui.sub)]) return viewTail(state.tails[decodeURIComponent(ui.sub)]);
@@ -2001,6 +2038,8 @@ function viewAircraft() {
     <div class="card"><h2>Aircraft types</h2>
       <div class="mut small">Built-in types ship with the app. Copy one to make your own (e.g. a different tank layout).</div>
       <div class="list">${allTypes().map((t) => `<a class="item" href="#aircraft/type-${esc(t.id)}"><div><div class="t">${esc(t.name)}</div><div class="s">${t.builtin ? 'Built-in' : 'Custom (this phone)'} · ${t.tanks.length} tanks · ${t.tanks.reduce((a, x) => a + x.capacity, 0)} gal</div></div><span class="mut">›</span></a>`).join('')}</div>
+      <a class="btn" id="requestType" href="${typeRequestUrl()}" target="_blank" rel="noopener">Request an aircraft type</a>
+      <div class="mut small">Opens a prefilled GitHub issue to fill in. Nothing from your flights or aircraft is included.</div>
       <label class="btn" for="importFile2">Import tail or type file</label><input type="file" id="importFile2" accept="application/json,.json" class="hidden">
     </div>
     <div class="card"><h2>App settings</h2>
@@ -2069,9 +2108,10 @@ function viewTypeEditor(id) {
       <div class="field"><label for="ty-fill">Fill order (POH)</label><input id="ty-fill" class="mono" data-ty="fillOrder" value="${esc((t.fillOrder || t.tanks.map((k) => k.id)).join(', '))}" ${ro}></div>
       <div class="field"><label>Tab level per tank (gal, blank = no tabs)</label><div class="grid4">${t.tanks.map((k, i) => `<div class="field"><label for="tt-${i}">${esc(k.id)}</label><input id="tt-${i}" class="mono" data-tk="${i}.tabGal" value="${k.tabGal ?? ''}" ${ro} inputmode="decimal"></div>`).join('')}</div></div>
       <div class="field"><label for="ty-groups">Burn order: pairs left/right, first used first</label><input id="ty-groups" class="mono" data-ty="groups" value="${esc(t.groups.map((g) => `${g.left}/${g.right}`).join(', '))}" ${ro}></div>
+      ${t.both ? `<div class="mut small">Selector has BOTH (${esc(t.both.join(' + '))}, burned equally). Plans run on Both; ${esc(t.both.join(' or '))} alone is for cruise, and a plan that takes off or lands on one tank is flagged.</div>` : ''}
       <div class="grid2">
-        <div class="field"><label for="ty-start">Start on</label><select id="ty-start" data-ty="startTank" ${ro}>${t.tanks.map((k) => `<option ${t.startTank === k.id ? 'selected' : ''}>${esc(k.id)}</option>`).join('')}</select></div>
-        <div class="field"><label for="ty-finish">Finish each group on</label><select id="ty-finish" data-ty="finishSide" ${ro}>${['R', 'L'].map((s) => `<option value="${s}" ${t.finishSide === s ? 'selected' : ''}>${s === 'R' ? 'Right' : 'Left'}</option>`).join('')}</select></div>
+        <div class="field"><label for="ty-start">Start on</label><select id="ty-start" data-ty="startTank" ${ro}>${P.selectable(t).map((k) => `<option ${t.startTank === k.id ? 'selected' : ''}>${esc(k.id)}</option>`).join('')}</select></div>
+        <div class="field"><label for="ty-finish">Finish each group on</label><select id="ty-finish" data-ty="finishSide" ${ro}>${['R', 'L', ''].map((s) => `<option value="${s}" ${(t.finishSide || '') === s ? 'selected' : ''}>${s === 'R' ? 'Right' : s === 'L' ? 'Left' : 'Either'}</option>`).join('')}</select></div>
       </div>
     </div>
     <div class="row"><button class="btn grow" data-act="copyType" data-id="${esc(t.id)}">Copy as custom</button>
@@ -2112,7 +2152,10 @@ const actions = {
     const typeId = $('#nt-type').value;
     if (!tail) return toast('Enter a tail number');
     if (state.tails[tail]) return toast(`${tail} already exists`);
-    state.tails[tail] = { tail, typeId, overrides: {} };
+    const cruise = num($('#nt-cruise')?.value);
+    if (!(cruise > 0)) return toast('Enter your cruise burn in gph');
+    const typeCruise = typeById(typeId)?.burn.cruise;
+    state.tails[tail] = { tail, typeId, overrides: cruise !== typeCruise ? { burn: { cruise } } : {} };
     state.settings.lastTail = tail;
     ui.draft = null;
     persist();
@@ -2394,6 +2437,7 @@ const actions = {
       const [gone] = t.tanks.splice(+el.dataset.i, 1);
       t.groups = t.groups.filter((g) => g.left !== gone.id && g.right !== gone.id);
       if (t.startTank === gone.id) t.startTank = t.tanks[0]?.id;
+      if (t.both) { t.both = t.both.filter((id) => id !== gone.id); if (t.both.length < 2) { delete t.both; if (t.startTank === P.BOTH) t.startTank = t.tanks[0]?.id; } }
     });
     render();
   }
@@ -2428,6 +2472,7 @@ export function autoColon(v) {
 
 function onField(ev, committed) {
   const el = ev.target;
+  if (el.dataset.ntType !== undefined) { const c = $('#nt-cruise'); if (c) c.value = typeById(el.value)?.burn.cruise ?? ''; return; }
   if ((el.dataset.fmt === 'hm' || el.dataset.fmt === 'hms') && !committed) {
     el.value = el.dataset.fmt === 'hms' ? autoColonHMS(el.value) : autoColon(el.value);
     try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) { /* ignore */ }
@@ -2528,7 +2573,7 @@ function onField(ev, committed) {
       let v = el.type === 'checkbox' ? el.checked : el.value;
       if (k === 'capacity') v = num(v) || tank.capacity;
       if (k === 'tabGal') v = num(v) > 0 ? num(v) : undefined;
-      if (k === 'id') { v = String(v).trim().toUpperCase() || old; t.groups.forEach((g) => { if (g.left === old) g.left = v; if (g.right === old) g.right = v; }); if (t.startTank === old) t.startTank = v; }
+      if (k === 'id') { v = String(v).trim().toUpperCase() || old; t.groups.forEach((g) => { if (g.left === old) g.left = v; if (g.right === old) g.right = v; }); if (t.startTank === old) t.startTank = v; if (t.both) t.both = t.both.map((id) => (id === old ? v : id)); }
       tank[k] = v;
     });
     render(); return;
