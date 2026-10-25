@@ -270,3 +270,25 @@ test('reserve uses the aircraft cruise burn (older base setting maps to it)', ()
   assert.equal(P.reserveGal(P.resolveConfig(type, { overrides: { rules: { reserve: { rate: 'base' } } } })), 15);
   assert.equal(P.reserveGal(P.resolveConfig(type, { overrides: { rules: { reserve: { rate: 'custom', customGph: 17 } } } })), 17);
 });
+
+test('fueling: per-tank gallons from running pump totals, compared with the calculated leftovers', () => {
+  const tanks = [
+    { id: 'LT', capacity: 17 }, { id: 'LM', capacity: 25, tabGal: 18 }, { id: 'RM', capacity: 25, tabGal: 18 }, { id: 'RT', capacity: 17 }
+  ];
+  const before = { LT: 4, LM: 6, RM: 5, RT: 4.5 };
+  const steps = [{ tank: 'LT', reading: 13.4 }, { tank: 'RT', reading: 26.0 }, { tank: 'LM', reading: 38.4 }, { tank: 'RM', reading: 51.6 }];
+  const r = P.fuelingResult({ request: 'tabs', before, startReading: 0, steps }, tanks);
+  const by = Object.fromEntries(r.rows.map((x) => [x.tank, x]));
+  assert.ok(Math.abs(by.LT.pumped - 13.4) < 1e-9 && Math.abs(by.RT.pumped - 12.6) < 1e-9);
+  assert.ok(Math.abs(by.LM.pumped - 12.4) < 1e-9 && Math.abs(by.RM.pumped - 13.2) < 1e-9);
+  assert.equal(by.LM.after, 18); assert.equal(by.LT.after, 17);
+  assert.ok(Math.abs(by.LT.diff - 0.4) < 1e-9, 'LT took 0.4 more than calculated');
+  assert.ok(Math.abs(by.LM.diff - 0.4) < 1e-9);
+  assert.ok(Math.abs(by.RM.diff - 0.2) < 1e-9);
+  assert.ok(Math.abs(r.total - 51.6) < 1e-9);
+  // specific amounts: after = before + pumped
+  const a = P.fuelingResult({ request: 'amounts', amounts: { LM: 10 }, before, startReading: 100, steps: [{ tank: 'LM', reading: 110.3 }] }, tanks);
+  const lm = a.rows.find((x) => x.tank === 'LM');
+  assert.ok(Math.abs(lm.after - 16.3) < 1e-9); assert.ok(Math.abs(lm.diff - 0.3) < 1e-9);
+  assert.equal(a.rows.find((x) => x.tank === 'LT').after, 4);
+});

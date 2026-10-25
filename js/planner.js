@@ -24,6 +24,8 @@ export function resolveConfig(type, tail, flightOverrides) {
   const ov = (tail && tail.overrides) || {};
   deepMerge(cfg, { burn: ov.burn, rules: ov.rules, alerts: ov.alerts, landing: ov.landing, idleHours: ov.idleHours });
   if (ov.capacities) for (const t of cfg.tanks) if (ov.capacities[t.id] > 0) t.capacity = +ov.capacities[t.id];
+  if (ov.tabs) for (const t of cfg.tanks) if (ov.tabs[t.id] > 0) t.tabGal = +ov.tabs[t.id];
+  if (!cfg.fillOrder) cfg.fillOrder = cfg.tanks.map((t) => t.id);
   if (flightOverrides) deepMerge(cfg, flightOverrides);
   return cfg;
 }
@@ -504,4 +506,41 @@ export function parseClock(str, refMs) {
   while (t - refMs > day / 2) t -= day;
   while (refMs - t > day / 2) t += day;
   return t;
+}
+
+// ---- fueling -------------------------------------------------------------
+// fueling: { request: 'full' | 'tabs' | 'amounts', amounts: {tank: gal}, startReading, steps: [{tank, reading}],
+//            before: {tank: gal} (calculated levels before fueling) }
+// Pump readings are the running total shown on the pump after each tank is done.
+export function fuelingResult(fueling, tanks) {
+  const pumped = Object.fromEntries(tanks.map((t) => [t.id, 0]));
+  let prev = +fueling.startReading || 0;
+  const stepGal = [];
+  for (const s of fueling.steps || []) {
+    const r = +s.reading;
+    if (!isFinite(r) || s.reading === '' || s.reading == null) { stepGal.push(null); continue; }
+    const g = r - prev;
+    stepGal.push(g);
+    if (pumped[s.tank] !== undefined) pumped[s.tank] += g;
+    prev = r;
+  }
+  const rows = tanks.map((t) => {
+    const before = fueling.before?.[t.id];
+    const isMain = t.tabGal > 0;
+    let target = null, expected = null, after;
+    if (fueling.request === 'full') target = t.capacity;
+    else if (fueling.request === 'tabs') target = isMain ? Math.min(t.tabGal, t.capacity) : t.capacity;
+    if (target != null) {
+      expected = before != null ? Math.max(0, target - before) : null;
+      after = target;
+    } else {
+      expected = +fueling.amounts?.[t.id] || 0;
+      after = before != null ? Math.min(t.capacity, before + pumped[t.id]) : null;
+    }
+    const filled = (fueling.steps || []).some((s) => s.tank === t.id);
+    // A tank not filled at all under top-off/tabs keeps what it had (unless it was already at target).
+    if (target != null && !filled) after = before != null ? before : null;
+    return { tank: t.id, before, target, expected: filled || target == null ? expected : 0, pumped: pumped[t.id], after, filled, diff: filled && expected != null ? pumped[t.id] - expected : null, known: target != null && filled };
+  });
+  return { rows, stepGal, total: prev - (+fueling.startReading || 0) };
 }

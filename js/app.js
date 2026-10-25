@@ -3,7 +3,7 @@ import * as P from './planner.js';
 import * as S from './store.js';
 
 export const APP_NAME = 'Burnplan';
-export const APP_VERSION = 'v26'; // keep in step with VERSION in sw.js
+export const APP_VERSION = 'v27'; // keep in step with VERSION in sw.js
 // Filled in by the deploy workflow with the commit and time; 'dev' when run locally.
 export const APP_BUILD = '__BUILD__';
 const MIN = 60000;
@@ -376,18 +376,19 @@ function go(route, sub = null) {
 }
 function readHash() {
   const [r, s] = location.hash.replace(/^#/, '').split('/');
-  ui.route = ['setup', 'plan', 'fly', 'log', 'aircraft'].includes(r) ? r : (activeFlight()?.status === 'active' ? 'fly' : 'setup');
+  ui.route = ['setup', 'plan', 'fly', 'fuel', 'log', 'aircraft'].includes(r) ? r : (activeFlight()?.status === 'active' ? 'fly' : 'plan');
   ui.sub = s || null;
 }
 
 function renderTabs() {
-  const tabs = [['setup', 'Setup'], ['plan', 'Plan'], ['fly', 'Fly'], ['log', 'Log'], ['aircraft', 'Settings']];
-  $('#tabs').innerHTML = tabs.map(([r, l]) => `<a href="#${r}" class="${ui.route === r ? 'on' : ''}">${l}</a>`).join('');
+  const tabs = [['plan', 'Plan'], ['fly', 'Fly'], ['fuel', 'Fuel'], ['log', 'Log'], ['aircraft', 'Settings']];
+  const on = ui.route === 'setup' ? 'plan' : ui.route;
+  $('#tabs').innerHTML = tabs.map(([r, l]) => `<a href="#${r}" class="${on === r ? 'on' : ''}">${l}</a>`).join('');
 }
 
 function render() {
   renderTabs();
-  const v = { setup: viewSetup, plan: viewPlan, fly: viewFly, log: viewLog, aircraft: viewAircraft }[ui.route];
+  const v = { setup: viewSetup, plan: viewPlan, fly: viewFly, fuel: viewFuel, log: viewLog, aircraft: viewAircraft }[ui.route];
   $('#app').innerHTML = v();
   if (ui.route === 'fly') renderFlyLive();
   if (ui.route === 'setup') renderSetupCalc();
@@ -406,9 +407,15 @@ function defaultDraft() {
   return {
     tail, from: '', to: '', ete: '', fuel: '', taxi: String(state.settings.lastTaxi?.[tail] ?? 15), climbMin: '', climbGph: '', cruiseGph: '',
     alt: { on: false, ident: '', ete: '', fuel: '' },
-    levels: cfg ? Object.fromEntries(Object.entries(fullLevels(cfg)).map(([k, v]) => [k, String(v)])) : {},
+    levels: cfg ? startLevelsFor(tail, cfg) : {},
     resMin: '', resGph: ''
   };
+}
+// Starting fuel for a new flight: what the last fueling (or the last flight's end) left, else full.
+function startLevelsFor(tail, cfg) {
+  const st = tailFuelState(tail);
+  const lv = st && st.levels ? st.levels : fullLevels(cfg);
+  return Object.fromEntries(cfg.tanks.map((t) => [t.id, String(Math.round(Math.min(t.capacity, Math.max(0, lv[t.id] ?? t.capacity)) * 10) / 10)]));
 }
 
 function draftFromFlight(f) {
@@ -501,6 +508,7 @@ function viewSetup() {
       <div class="mut small">When checked, the reserve is counted after reaching the alternate.</div>
     </div>
     <div class="card"><div class="row between"><h2>Starting fuel (usable gal)</h2><button class="btn sm outline" data-act="allFull">All full</button></div>
+      ${(() => { const st = tailFuelState(d.tail); return st ? `<div class="mut small">Prefilled from ${esc(st.label)}. <a href="#fuel">Fuel tab</a></div>` : ''; })()}
       <div class="grid4">${cfg.tanks.map((t) => `<div class="field"><label for="lv-${t.id}">${esc(t.id)} <span class="dim">/${t.capacity}</span></label><input id="lv-${t.id}" class="mono" data-d="levels.${t.id}" value="${esc(d.levels[t.id] ?? t.capacity)}" inputmode="decimal"></div>`).join('')}</div>
     </div>
     <details class="card"><summary>Reserve for this flight</summary>
@@ -608,7 +616,7 @@ function phaseLines(raw, untilLbl) {
 
 function viewPlan() {
   const f = activeFlight();
-  if (!f) return `<div class="top"><div><div class="kicker">Plan</div><h1>No flight</h1></div></div><div class="card empty">Set up a flight to build a plan.<br><br><a class="btn primary" href="#setup">Flight setup</a></div>`;
+  if (!f) return viewSetup();
   const cfg = f.cfg;
   const chk = planCheck(f);
   const p = f.plan;
@@ -632,7 +640,7 @@ function viewPlan() {
   const offPlan = !!(planAtNow && estNow && planAtNow.tank !== estNow.active);
 
   return `<div class="top"><div><div class="kicker">Plan · ${esc(f.tail)}</div><h1>${flightTitle(f)}</h1></div>
-    <span class="badge ${p.source === 'edited' ? 'amber' : ''}">${p.source === 'edited' ? 'Edited' : p.source === 'rebuilt' ? 'Rebuilt' : 'Generated'}</span></div>
+    <div class="stack" style="gap:6px;align-items:flex-end"><span class="badge ${p.source === 'edited' ? 'amber' : ''}">${p.source === 'edited' ? 'Edited' : p.source === 'rebuilt' ? 'Rebuilt' : 'Generated'}</span>${f.status === 'draft' ? '<a class="btn sm" href="#setup">Edit setup</a>' : ''}</div></div>
   <div class="stack">
     <div class="chips">
       <div class="chip"><span class="k">Burn ${p.startMin > 0 ? 'remaining' : ''}</span><span class="v">${f1(P.fuelBetween(p.segs, p.startMin, p.endMin))}</span></div>
@@ -1077,7 +1085,7 @@ function sheetEte(f) {
     <button class="btn primary block" data-act="saveEte">Save &amp; rebuild plan</button>`];
 }
 
-const EV_LABEL = { gauge: 'Gauges', burn: 'Cruise burn', takeoff: 'Takeoff', engine: 'Taxi', switch: 'Switch', climb: 'Climb', level: 'Level off', check: 'Fuel check', ete: 'ETE update', shutdown: 'Shutdown', reactivate: 'Reactivation' };
+const EV_LABEL = { gauge: 'Gauges', burn: 'Cruise burn', takeoff: 'Takeoff', engine: 'Taxi', switch: 'Switch', climb: 'Climb', level: 'Level off', check: 'Fuel check', ete: 'ETE update', shutdown: 'Shutdown', reactivate: 'Reactivation', note: 'Note' };
 
 function sheetEdit(f) {
   const k = ui.sd.kind, isNew = ui.sd.i < 0;
@@ -1096,6 +1104,7 @@ function sheetEdit(f) {
       <div class="field"><label for="sd-note">Note</label><input id="sd-note" data-sd="note" value="${esc(ui.sd.note || '')}"></div>`;
     if (k === 'burn') fields += `<div class="field"><label for="sd-gph">Cruise fuel flow (gph)</label><input id="sd-gph" class="big key" data-sd="gph" value="${esc(ui.sd.gph)}" inputmode="decimal"></div>
       <label class="check"><input type="checkbox" data-sd="allScope" ${ui.sd.allScope ? 'checked' : ''}>Applies to the whole cruise</label>`;
+    if (k === 'note') fields += `<div class="field"><label for="sd-note">Note</label><textarea id="sd-note" data-sd="note" rows="3" class="key" placeholder="Anything worth remembering about this flight">${esc(ui.sd.note || '')}</textarea></div>`;
     if (k === 'check' || k === 'shutdown') fields += `<div class="field"><label for="sd-used">GI 275 fuel used since start</label><input id="sd-used" class="big ${k === 'check' ? 'key' : ''}" data-sd="used" value="${esc(ui.sd.used)}" inputmode="decimal"></div>`;
     if (k === 'check') fields += `<div class="field"><label for="sd-flow">Fuel flow (sets cruise burn from here; blank = no change)</label><input id="sd-flow" class="big" data-sd="flow" value="${esc(ui.sd.flow)}" inputmode="decimal"></div>`;
     if (k === 'ete') fields += `<div class="grid2"><div class="field"><label for="sd-ete">ETE</label><input id="sd-ete" class="big key" data-fmt="hm" data-sd="ete" value="${esc(ui.sd.ete)}" inputmode="numeric"></div>
@@ -1175,13 +1184,14 @@ function saveEdit() {
     if (!Object.keys(readings).length) return toast('Enter at least one tank');
     ev.readings = readings; ev.note = (ui.sd.note || '').trim() || null; ev.phase = gaugePhase(f, t);
   }
+  if (k === 'note') { const n = (ui.sd.note || '').trim(); if (!n) return toast('Type a note'); ev.note = n; }
   if (k === 'burn') { const g = num(ui.sd.gph); if (!(g > 0)) return toast('Enter the cruise fuel flow'); ev.gph = g; ev.scope = ui.sd.allScope ? 'all' : undefined; }
   if (k === 'climb') { const len = P.parseDur(ui.sd.len); ev.until = isFinite(len) && len > 0 ? t + len * MIN : null; ev.gph = num(ui.sd.gph) > 0 ? num(ui.sd.gph) : ev.gph || f.climbGph; }
   if (k === 'check') { const u = num(ui.sd.used); if (!isFinite(u)) return toast('Enter fuel used'); ev.used = u; const g = num(ui.sd.flow); ev.gph = g > 0 ? g : null; ev.setsBurn = g > 0; }
   if (k === 'shutdown') { const u = num(ui.sd.used); ev.used = isFinite(u) ? u : null; ev.assumed = false; f.shutdown = t; f.finalUsed = ev.used; f.autoEnded = false; }
   if (k === 'ete') { const d = P.parseDur(ui.sd.ete); if (!isFinite(d)) return toast('Enter ETE'); ev.eteMin = d; ev.fuelToDest = num(ui.sd.fuel) || null; }
   if (i < 0) f.events.push(ev);
-  if (k === 'gauge') { f.events.sort((a, b) => a.at - b.at); persist(); closeSheet(); toast(i < 0 ? 'Added' : 'Updated'); render(); return; } // calibration only: no recalculation
+  if (k === 'gauge' || k === 'note') { f.events.sort((a, b) => a.at - b.at); persist(); closeSheet(); toast(i < 0 ? 'Added' : 'Updated'); render(); return; } // no recalculation
   closeSheet(); afterHistoryEdit(f, 'history edit'); toast(i < 0 ? 'Added' : 'Updated'); render();
 }
 
@@ -1248,7 +1258,7 @@ function sheetShutdown(f) {
 function sheetTime() {
   const f = sheetFlight();
   if (ui.sheet === 'burn' && ui.sd.scope === 'all') return now();
-  if (ui.sheet === 'gauge' && !f.engineStart) { const c = parseClockZ(ui.sd.at, now()); return isFinite(c) && c <= now() + MIN ? c : NaN; }
+  if ((ui.sheet === 'gauge' || (ui.sheet === 'edit' && ui.sd.kind === 'note')) && !f.engineStart) { const c = parseClockZ(ui.sd.at, now()); return isFinite(c) && c <= now() + MIN ? c : NaN; }
   const tm = ui.sd.tmode;
   if (takeoffField()) {
     if (tm === 'timer') {
@@ -1517,6 +1527,159 @@ function flightSummary(f) {
   return { plannedBlock, plannedFuel, actualBlock, actualFuel, actualGph, avgGph, plannedGph: f.cruiseGph, plannedFlight, actualFlight };
 }
 
+// =====================================================================
+// FUEL (ground fills + gauge calibration)
+// =====================================================================
+const REQ = { full: 'Top off all', tabs: 'Tips full, mains to tabs', amounts: 'Specific amounts' };
+const fuelings = () => Object.values(state.fuelings || {});
+
+// What's in the tanks for a tail at a moment: the later of the last fueling and the last flight's end.
+function tailFuelState(tailId, atMs = now(), excludeId = null) {
+  if (!tailId || !state.tails[tailId]) return null;
+  const cfg = cfgForTail(tailId);
+  let best = null;
+  for (const f of Object.values(state.flights)) {
+    if (f.tail !== tailId || f.status !== 'closed' || !f.shutdown || f.shutdown > atMs) continue;
+    if (!best || f.shutdown > best.at) best = { at: f.shutdown, levels: P.estimate(f, f.cfg, f.shutdown).levels, label: `the end of ${f.from || '—'} → ${f.divert?.ident || f.to || '—'} (calculated)` };
+  }
+  for (const fu of fuelings()) {
+    if (fu.tail !== tailId || fu.id === excludeId || fu.at > atMs) continue;
+    if (!best || fu.at > best.at) {
+      const r = P.fuelingResult(fu, cfg.tanks);
+      best = { at: fu.at, levels: Object.fromEntries(r.rows.map((x) => [x.tank, x.after ?? x.before ?? 0])), label: `fueling${fu.airport ? ' at ' + fu.airport : ''} ${fmtDate(fu.at)} ${localHM(fu.at, fu.tz || phoneTZ())}` };
+    }
+  }
+  return best;
+}
+
+function newFuelDraft(tail) {
+  const cfg = cfgForTail(tail);
+  const st = tailFuelState(tail);
+  return {
+    id: null, tail, at: now(), tz: phoneTZ(), airport: '', request: 'tabs', amounts: {},
+    before: Object.fromEntries(cfg.tanks.map((t) => [t.id, st ? Math.round(Math.max(0, st.levels[t.id]) * 10) / 10 : ''])),
+    beforeLabel: st ? st.label : null,
+    startReading: '0', steps: cfg.fillOrder.map((id) => ({ tank: id, reading: '' })),
+    gaugeBefore: {}, gaugeAfter: {}, note: ''
+  };
+}
+
+function fuelingCalc(d) {
+  const cfg = cfgForTail(d.tail);
+  const fu = { ...d, before: Object.fromEntries(Object.entries(d.before || {}).map(([k, v]) => [k, v === '' || v == null ? null : num(v)])), startReading: num(d.startReading) || 0 };
+  return { cfg, res: P.fuelingResult(fu, cfg.tanks) };
+}
+
+function viewFuel() {
+  if (ui.sub === 'edit' && state.fuelDraft) return viewFuelingEdit(state.fuelDraft);
+  if (ui.sub && state.fuelings?.[ui.sub]) return viewFuelingDetail(state.fuelings[ui.sub]);
+  const tails = Object.keys(state.tails);
+  if (!tails.length) return `<div class="top"><div><div class="kicker">Fuel</div><h1>Fueling</h1></div></div><div class="card empty">Add an aircraft in Settings first.</div>`;
+  const tail = state.settings.fuelTail && state.tails[state.settings.fuelTail] ? state.settings.fuelTail : state.settings.lastTail && state.tails[state.settings.lastTail] ? state.settings.lastTail : tails[0];
+  const cfg = cfgForTail(tail);
+  const st = tailFuelState(tail);
+  const list = fuelings().filter((x) => x.tail === tail).sort((a, b) => b.at - a.at);
+  return `<div class="top"><div><div class="kicker">Fuel</div><h1>Fueling &amp; calibration</h1></div></div>
+  <div class="stack">
+    ${tails.length > 1 ? `<div class="field"><label for="fuelTail">Aircraft</label><select id="fuelTail" data-fueltail>${tails.map((t) => `<option ${t === tail ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>` : ''}
+    <div class="card"><div class="row between"><h2>${esc(tail)} on board now</h2><span class="mut small">${st ? 'calculated' : 'unknown'}</span></div>
+      <div class="grid4">${cfg.tanks.map((t) => `<div class="chip" style="padding:8px"><span class="k" style="color:${tankColor(cfg, t.id)}">${esc(t.id)} /${t.capacity}</span><span class="v" style="font-size:16px">${st ? f1(st.levels[t.id]) : '—'}</span></div>`).join('')}</div>
+      <div class="mut small">${st ? `From ${esc(st.label)}.` : 'No flight or fueling recorded yet for this aircraft.'}</div>
+      ${state.fuelDraft ? `<a class="btn primary block" href="#fuel/edit">Continue fueling in progress</a>` : `<button class="btn primary block" data-act="newFueling" data-tail="${esc(tail)}">Start fueling</button>`}
+    </div>
+    ${fuelCalCard(tail)}
+    ${calibrationCard()}
+    <div class="lbl" style="text-transform:uppercase;letter-spacing:.06em;font-size:11px;margin-bottom:-6px">Fuelings</div>
+    <div class="list">${list.length ? list.map((x) => { const r = P.fuelingResult(x, cfg.tanks); return `<a class="item" href="#fuel/${x.id}"><div><div class="t">${esc(REQ[x.request])}${x.airport ? ' · ' + esc(x.airport) : ''}</div><div class="s">${fmtDate(x.at, x.tz)} ${localHM(x.at, x.tz || phoneTZ())} · ${r.rows.filter((y) => y.filled).map((y) => `${y.tank} ${f1(y.pumped)}`).join(' · ')}</div></div><span class="mono">${f1(r.total)} gal</span></a>`; }).join('') : '<div class="card empty">No fuelings yet.</div>'}</div>
+  </div>`;
+}
+
+// How far the calculated leftovers were from what the pump said each tank needed (top-off and tabs fills).
+function fuelCalCard(tail) {
+  const cfg = cfgForTail(tail);
+  const pts = [];
+  for (const x of fuelings()) {
+    if (x.tail !== tail || x.request === 'amounts') continue;
+    for (const r of P.fuelingResult(x, cfg.tanks).rows) if (r.filled && r.diff != null) pts.push(r);
+  }
+  if (!pts.length) return '';
+  const avg = (a) => a.reduce((p, q) => p + q, 0) / a.length;
+  return `<div class="card"><h2>Burn estimate vs the pump</h2>
+    <div class="mut small">On top-off and tabs fills: gallons pumped minus what Burnplan calculated each tank needed. Positive = the tank had less than calculated (we under-estimated the burn from it).</div>
+    <div class="grid4">${cfg.tanks.map((t) => { const l = pts.filter((p) => p.tank === t.id).map((p) => p.diff); return `<div class="chip" style="padding:8px"><span class="k" style="color:${tankColor(cfg, t.id)}">${esc(t.id)}${l.length ? ` ·${l.length}` : ''}</span><span class="v" style="font-size:16px;color:${l.length && Math.abs(avg(l)) >= 1 ? 'var(--amber)' : 'inherit'}">${l.length ? `${avg(l) >= 0 ? '+' : ''}${f1(avg(l))}` : '—'}</span></div>`; }).join('')}</div></div>`;
+}
+
+function viewFuelingEdit(d) {
+  const { cfg, res } = fuelingCalc(d);
+  const by = Object.fromEntries(res.rows.map((r) => [r.tank, r]));
+  const inp = (id, attrs, val, ph = '') => `<input id="${id}" class="mono" ${attrs} value="${esc(val ?? '')}" placeholder="${ph}" inputmode="decimal">`;
+  const tabsTxt = cfg.tanks.filter((t) => t.tabGal > 0).map((t) => `${t.id} ${t.tabGal}`).join(', ');
+  return `<div class="top"><div><div class="kicker"><a href="#fuel">Fuel</a> · ${esc(d.tail)}</div><h1>${d.id ? 'Edit fueling' : 'Fueling'}</h1></div></div>
+  <div class="stack">
+    <div class="grid2">
+      <div class="field"><label for="fu-at">Time (${zoneAbbr(d.tz || phoneTZ(), d.at)} clock)</label><input id="fu-at" class="mono" data-fmt="hm" data-fu="atClock" value="${localHM(d.at, d.tz || phoneTZ())}" inputmode="numeric"></div>
+      <div class="field"><label for="fu-apt">Airport (opt.)</label><input id="fu-apt" class="mono" data-fu="airport" value="${esc(d.airport)}" autocapitalize="characters" placeholder="KVBT"></div>
+    </div>
+    <div class="field"><span class="lbl">What you asked for</span>
+      <div class="seg" style="grid-template-columns:repeat(3,minmax(0,1fr))" role="group" aria-label="Fuel request">${Object.entries(REQ).map(([k, l]) => `<button class="${d.request === k ? 'on' : ''}" aria-pressed="${d.request === k}" data-act="fuReq" data-v="${k}" style="height:auto;min-height:44px;padding:4px">${l}</button>`).join('')}</div>
+      ${d.request === 'tabs' ? `<div class="mut small">Tips to full, mains to the tabs (${esc(tabsTxt || 'set tab levels in Settings')} gal).</div>` : ''}
+    </div>
+    <div class="card"><h2>Tanks</h2>
+      <div class="legs" style="border:none;overflow-x:auto">
+        <div class="evrow head" style="grid-template-columns:0.6fr 1fr ${d.request === 'amounts' ? '1fr ' : ''}1fr;padding:0"><span>Tank</span><span>Before (calc)</span>${d.request === 'amounts' ? '<span>Asked for</span>' : ''}<span>Gauge before</span></div>
+        ${cfg.tanks.map((t) => `<div class="evrow" style="grid-template-columns:0.6fr 1fr ${d.request === 'amounts' ? '1fr ' : ''}1fr;padding:0;border:none;min-height:50px">
+          <span style="color:${tankColor(cfg, t.id)};font-weight:600;font-family:var(--sans)">${esc(t.id)} <span class="dim small">/${t.capacity}</span></span>
+          ${inp('fb-' + t.id, `data-fub="${t.id}"`, d.before?.[t.id], '?')}
+          ${d.request === 'amounts' ? inp('fa-' + t.id, `data-fua="${t.id}"`, d.amounts?.[t.id], 'gal') : ''}
+          ${inp('fg-' + t.id, `data-fgb="${t.id}"`, d.gaugeBefore?.[t.id], 'opt.')}</div>`).join('')}
+      </div>
+      <div class="mut small">${d.beforeLabel ? `Before levels from ${esc(d.beforeLabel)}. Change them if you know better.` : 'Enter what you believe was in each tank, if you know.'} Gauge readings take gallons, 3/4, 60%, F or E.</div>
+    </div>
+    <div class="card"><h2>Fill, in order</h2>
+      <div class="field"><label for="fu-start">Pump reading at start</label><input id="fu-start" class="mono" data-fu="startReading" value="${esc(d.startReading)}" inputmode="decimal"></div>
+      ${d.steps.map((st, i) => `<div class="row" style="gap:8px;align-items:flex-end">
+        <span class="mut small" style="width:16px;padding-bottom:14px">${i + 1}</span>
+        <div class="field" style="width:84px"><label for="fs-${i}">Tank</label><select id="fs-${i}" data-fstank="${i}" class="mono">${cfg.tanks.map((t) => `<option ${t.id === st.tank ? 'selected' : ''}>${esc(t.id)}</option>`).join('')}</select></div>
+        <div class="field grow"><label for="fr-${i}">Pump reading when done</label><input id="fr-${i}" class="mono key" data-fsread="${i}" value="${esc(st.reading)}" inputmode="decimal"></div>
+        <span class="mono" style="width:56px;text-align:right;padding-bottom:14px">${res.stepGal[i] != null ? f1(res.stepGal[i]) : '—'}</span>
+        <button class="iconbtn" data-act="fuDelStep" data-i="${i}" aria-label="Remove step ${i + 1}">${ICON.del}</button></div>`).join('')}
+      <div class="row wrap"><button class="btn sm" data-act="fuAddStep">+ Add tank</button><span class="mut small grow">Order from the POH (${esc(cfg.fillOrder.join(' → '))}); change it to match what the fueler did.</span></div>
+    </div>
+    <div class="card"><h2>Result</h2>
+      <div class="legs" style="border:none;overflow-x:auto">
+        <div class="evrow head" style="grid-template-columns:0.6fr 1fr 1fr 1fr 1fr;padding:0"><span>Tank</span><span>Pumped</span><span>Expected</span><span>Diff</span><span>After</span></div>
+        ${res.rows.map((r) => `<div class="evrow" style="grid-template-columns:0.6fr 1fr 1fr 1fr 1fr;padding:0;border:none;min-height:36px"><span style="color:${tankColor(cfg, r.tank)};font-family:var(--sans);font-weight:600">${esc(r.tank)}</span><span>${r.filled ? f1(r.pumped) : '—'}</span><span class="mut">${r.expected != null && r.filled ? f1(r.expected) : '—'}</span><span style="color:${r.diff != null && Math.abs(r.diff) >= 1 ? 'var(--amber)' : 'inherit'}">${r.diff != null ? `${r.diff >= 0 ? '+' : ''}${f1(r.diff)}` : '—'}</span><span>${r.after != null ? f1(r.after) : '—'}${r.known ? '' : r.after != null ? '<span class="dim">*</span>' : ''}</span></div>`).join('')}
+        <div class="kv total" style="margin-top:6px"><span>Total pumped</span><span class="v">${f1(res.total)} gal</span></div>
+      </div>
+      <div class="mut small">Expected = what Burnplan calculated each tank needed${d.request === 'amounts' ? ' (the amount you asked for)' : ' to reach the target'}. Diff = pumped − expected. ${d.request === 'amounts' ? '* After = before + pumped, since there is no known full mark.' : '* Not filled, so unchanged.'}</div>
+    </div>
+    <div class="card"><h2>Gauges after (optional)</h2>
+      <div class="grid4">${cfg.tanks.map((t) => `<div class="field"><label for="fga-${t.id}" style="color:${tankColor(cfg, t.id)}">${esc(t.id)}</label>${inp('fga-' + t.id, `data-fga="${t.id}"`, d.gaugeAfter?.[t.id], 'F')}</div>`).join('')}</div>
+      <div class="mut small">Readings right after a top-off are the best calibration points: the true level is known.</div>
+    </div>
+    <div class="field"><label for="fu-note">Note</label><input id="fu-note" data-fu="note" value="${esc(d.note)}"></div>
+    <div class="row"><button class="btn danger grow" data-act="fuDiscard">${d.id ? 'Cancel' : 'Discard'}</button><button class="btn primary grow" data-act="fuSave">Save fueling</button></div>
+    <div class="mut small">Saving sets this aircraft's starting fuel for the next flight to the After column.</div>
+  </div>`;
+}
+
+function viewFuelingDetail(x) {
+  const cfg = cfgForTail(x.tail);
+  const r = P.fuelingResult(x, cfg.tanks);
+  const g = (o, id) => { const v = o?.[id]; if (v == null || v === '') return '—'; const gal = parseGauge(v, cfg.tanks.find((t) => t.id === id)?.capacity); return gal == null || !isFinite(gal) ? esc(String(v)) : f1(gal); };
+  return `<div class="top"><div><div class="kicker"><a href="#fuel">Fuel</a> · ${esc(x.tail)} · ${fmtDate(x.at, x.tz)} ${localHM(x.at, x.tz || phoneTZ())}</div><h1>${esc(REQ[x.request])}</h1></div></div>
+  <div class="stack">
+    ${x.airport ? `<div class="mut">${esc(x.airport)}</div>` : ''}
+    <div class="legs" style="padding:8px 12px;overflow-x:auto">
+      <div class="evrow head" style="grid-template-columns:0.6fr repeat(6, 1fr);padding:0"><span>Tank</span><span>Before</span><span>Gauge</span><span>Pumped</span><span>Diff</span><span>After</span><span>Gauge</span></div>
+      ${r.rows.map((y) => `<div class="evrow" style="grid-template-columns:0.6fr repeat(6, 1fr);padding:0;min-height:36px"><span style="color:${tankColor(cfg, y.tank)};font-family:var(--sans);font-weight:600">${esc(y.tank)}</span><span>${y.before != null ? f1(y.before) : '—'}</span><span class="mut">${g(x.gaugeBefore, y.tank)}</span><span>${y.filled ? f1(y.pumped) : '—'}</span><span style="color:${y.diff != null && Math.abs(y.diff) >= 1 ? 'var(--amber)' : 'inherit'}">${y.diff != null ? `${y.diff >= 0 ? '+' : ''}${f1(y.diff)}` : '—'}</span><span>${y.after != null ? f1(y.after) : '—'}</span><span class="mut">${g(x.gaugeAfter, y.tank)}</span></div>`).join('')}
+      <div class="kv total"><span>Total pumped</span><span class="v">${f1(r.total)} gal</span></div>
+    </div>
+    <div class="mut small">Fill order: ${x.steps.map((s, i) => `${s.tank} ${r.stepGal[i] != null ? f1(r.stepGal[i]) : '—'}`).join(' → ')}${x.note ? ` · ${esc(x.note)}` : ''}</div>
+    <div class="row"><button class="btn grow" data-act="fuEdit" data-id="${x.id}">Edit</button><button class="btn danger grow" data-act="fuDelete" data-id="${x.id}">Delete</button></div>
+  </div>`;
+}
+
 // ---------- gauge calibration ----------
 // A gauge reading can be typed as gallons (9.5), a fraction (3/4), a percent (60%), F or E.
 function parseGauge(str, cap) {
@@ -1556,6 +1719,18 @@ function gaugePoints() {
       }
     }
   }
+  for (const x of fuelings()) {
+    if (!state.tails[x.tail]) continue;
+    const cfg = cfgForTail(x.tail);
+    const r = P.fuelingResult(x, cfg.tanks);
+    const fake = { from: 'fueling', to: x.airport || '', tail: x.tail, engineStart: null };
+    for (const y of r.rows) {
+      const t = cfg.tanks.find((k) => k.id === y.tank);
+      const gb = parseGauge(x.gaugeBefore?.[y.tank], t.capacity), ga = parseGauge(x.gaugeAfter?.[y.tank], t.capacity);
+      if (gb != null && isFinite(gb) && y.before != null) pts.push({ f: fake, e: { at: x.at, phase: 'before fueling', note: x.note }, tank: y.tank, cap: t.capacity, ind: gb, calc: y.before, diff: gb - y.before });
+      if (ga != null && isFinite(ga) && y.after != null) pts.push({ f: fake, e: { at: x.at, phase: 'after fueling', note: x.note }, tank: y.tank, cap: t.capacity, ind: ga, calc: y.after, diff: ga - y.after });
+    }
+  }
   return pts;
 }
 function calibrationCard() {
@@ -1590,7 +1765,6 @@ function viewLog() {
       <div class="kv"><span class="mut">Avg flight time vs ETE</span><span class="v">${tErr == null ? '—' : (tErr >= 0 ? '+' : '') + Math.round(tErr) + ' min'}</span></div>
       <div class="kv"><span class="mut">Avg fuel error (GI 275)</span><span class="v">${fErr == null ? '—' : `${fErr >= 0 ? '+' : ''}${f1(fErr)} gal (${fPct >= 0 ? '+' : ''}${f1(fPct)}%)`}</span></div>
       <div class="mut small">Positive = took longer / burned more than ForeFlight planned. Enter GI 275 fuel used at shutdown to fill in fuel.</div></div>` : ''}
-    ${calibrationCard()}
     <div class="list">${flights.length ? flights.map((f) => `<a class="item" href="#log/${f.id}"><div><div class="t">${flightTitle(f)}</div><div class="s">${fmtDate(f.engineStart || f.createdAt, f.tz || phoneTZ())} · ${esc(f.tail)} · ${f.status === 'active' ? 'in progress' : f.status === 'draft' ? 'planned' : f.autoSaved ? 'auto-saved' : 'closed'}</div></div>
       <span class="mono ${f.id === state.activeFlightId ? '' : 'mut'}" style="color:${f.id === state.activeFlightId ? 'var(--amber)' : ''}">${f.id === state.activeFlightId ? 'active' : f1(f.finalUsed ?? f.plannedFuel) + ' gal'}</span></a>`).join('') : '<div class="card empty">No flights yet.</div>'}</div>
   </div>`;
@@ -1609,7 +1783,8 @@ function viewFlightDetail(f) {
     check: `GI 275 check · ${f1(e.used)} gal used${e.setsBurn ? ` · flow ${f1(e.gph)} gph` : ''}`,
     ete: `ETE ${dur(e.eteMin)}${e.divert ? ` → ${e.divert} (divert)` : ''}${e.fuelToDest ? ` · ${f1(e.fuelToDest)} gal to go` : e.gph ? ` · ${f1(e.gph)} gph` : ''}${e.altFuel ? ` · alt ${f1(e.altFuel)}` : ''}`,
     shutdown: `Shutdown${e.assumed ? ' (assumed)' : ''}${e.used ? ` · ${f1(e.used)} gal used` : ''}`,
-    reactivate: 'Reactivated'
+    reactivate: 'Reactivated',
+    note: `Note · ${e.note || ''}`
   }[e.type] || e.type);
   const evs = f.events.map((e, i) => ({ ...e, i })).sort((a, b) => a.at - b.at);
   const editable = !!f.engineStart;
@@ -1623,11 +1798,11 @@ function viewFlightDetail(f) {
       ${f.divert ? `<div class="mut small">Planned ${esc(f.to)}; diverted to ${esc(f.divert.ident)} at ${hm(f.divert.at)}.</div>` : ''}
     </div>
     <div class="legs"><div class="evrow head"><span>Event</span><span>Plan</span><span>Actual</span><span>Entered</span></div>${f.engineStart ? `<div style="padding:8px 12px 0">${zoneControl(f, true)}</div>` : ''}<div class="mut small" style="padding:6px 12px">Plan and actual are flight timer; entered is ${clockLabel()} clock.</div>
-      ${evs.length ? evs.map((e) => `<div class="evrow ${editable ? 'tap' : ''}" ${editable ? `role="button" tabindex="0" data-act="editEvent" data-fid="${f.id}" data-i="${e.i}" aria-label="Edit ${esc(evName(e))}"` : ''}><span>${esc(evName(e))}${e.edited || e.added ? ' <span class="badge" style="font-size:10px;padding:1px 5px">edited</span>' : ''}</span><span class="mut">${e.planned ? fmtTimer(timerAt(f, e.planned.at)) : '—'}</span><span style="color:${e.planned && Math.abs(e.at - e.planned.at) >= 2 * MIN ? 'var(--amber)' : ''}">${fmtTimer(timerAt(f, e.at))}</span><span class="mut">${e.enteredAt ? hm(e.enteredAt) : '—'}</span></div>`).join('') : '<div class="empty">No events yet.</div>'}
+      ${evs.length ? evs.map((e) => { const ed = editable || e.type === 'note'; return `<div class="evrow ${ed ? 'tap' : ''}${e.type === 'note' ? ' note' : ''}" ${ed ? `role="button" tabindex="0" data-act="editEvent" data-fid="${f.id}" data-i="${e.i}" aria-label="Edit ${esc(evName(e))}"` : ''}><span>${esc(evName(e))}${(e.edited || e.added) && e.type !== 'note' ? ' <span class="badge" style="font-size:10px;padding:1px 5px">edited</span>' : ''}</span><span class="mut">${e.planned ? fmtTimer(timerAt(f, e.planned.at)) : '—'}</span><span style="color:${e.planned && Math.abs(e.at - e.planned.at) >= 2 * MIN ? 'var(--amber)' : ''}">${f.engineStart ? fmtTimer(timerAt(f, e.at)) : hm(e.at)}</span><span class="mut">${e.enteredAt ? hm(e.enteredAt) : '—'}</span></div>`; }).join('') : '<div class="empty">No events yet.</div>'}
     </div>
     ${f.autoEnded || (f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown')) ? `<div class="issue warn">${ICON.warn}<div>${f.autoEnded ? `Ended automatically at the assumed landing time (${f.shutdown ? fmtTimer(timerAt(f, f.shutdown)) : '—'}).` : 'No shutdown was recorded, so fuel kept burning until the flight was auto-saved.'} Tap <b>Shutdown</b> below to set when you actually shut down.</div></div>` : ''}
     ${editable ? `<div class="stack" style="gap:8px"><div class="mut small">Tap an entry to correct it. Add anything you missed:</div>
-      <div class="row wrap">${['switch', 'climb', 'level', 'burn', 'check', 'gauge', ...(f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown') ? ['shutdown'] : [])].map((k) => `<button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="${k}">+ ${EV_LABEL[k]}</button>`).join('')}</div></div>` : ''}
+      <div class="row wrap">${['note', 'switch', 'climb', 'level', 'burn', 'check', 'gauge', ...(f.status === 'closed' && !f.events.some((e) => e.type === 'shutdown') ? ['shutdown'] : [])].map((k) => `<button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="${k}">+ ${EV_LABEL[k]}</button>`).join('')}</div></div>` : `<div class="row"><button class="btn sm" data-act="addEvent" data-fid="${f.id}" data-kind="note">+ Note</button></div>`}
     ${f.engineStart ? replayCard(f) : ''}
     ${planVersionsCard(f)}
     ${setupCard(f)}
@@ -1774,6 +1949,8 @@ function viewTail(tail) {
   <div class="stack">
     <div class="mut small">Blank or "Default" = the aircraft type's setting (shown grey). Anything you set here applies to this tail only and is marked •. Changes apply to new plans; flights already planned keep their settings until rebuilt from Setup.</div>
     <div class="card"><h2>Tank capacities (usable gal)</h2><div class="ovr">${cfg.tanks.map((t) => `<label for="cap-${t.id}" class="${ov.capacities?.[t.id] ? '' : 'mut'}">${esc(t.name)} (${esc(t.id)})</label><input id="cap-${t.id}" class="mono" data-cap="${esc(t.id)}" value="${ov.capacities?.[t.id] ?? ''}" placeholder="${type.tanks.find((x) => x.id === t.id).capacity}" inputmode="decimal">`).join('')}</div></div>
+    <div class="card"><h2>Fueling</h2><div class="ovr">${cfg.tanks.filter((t) => type.tanks.find((x) => x.id === t.id).tabGal > 0 || ov.tabs?.[t.id]).map((t) => `<label for="tab-${t.id}" class="${ov.tabs?.[t.id] ? '' : 'mut'}">${esc(t.name)} tabs (gal)${ov.tabs?.[t.id] ? ' •' : ''}</label><input id="tab-${t.id}" class="mono" data-tab="${esc(t.id)}" value="${ov.tabs?.[t.id] ?? ''}" placeholder="${type.tanks.find((x) => x.id === t.id).tabGal ?? ''}" inputmode="decimal">`).join('')}</div>
+      <div class="mut small">Fill order: ${esc(cfg.fillOrder.join(' → '))} (from the aircraft type).</div></div>
     ${OVR_FIELDS.map(([title, fields]) => `<div class="card"><h2>${title}</h2><div class="ovr">${fields.map(fld).join('')}</div>${title === 'Reserve' ? `<div class="mut small">= ${f1(P.reserveGal(cfg))} gal (${dur(cfg.rules.reserve.min)} @ ${f1(P.reserveGph(cfg))} gph)</div>` : ''}</div>`).join('')}
     <div class="row"><button class="btn grow" data-act="exportTail" data-tail="${esc(tail.tail)}">Share tail setup</button><button class="btn danger grow" data-act="deleteTail" data-tail="${esc(tail.tail)}">Remove</button></div>
   </div>`;
@@ -1802,6 +1979,8 @@ function viewTypeEditor(id) {
       ${t.tanks.map((k, i) => `<label class="check"><input type="checkbox" data-tk="${i}.takeoffLanding" ${k.takeoffLanding !== false ? 'checked' : ''} ${ro}>${esc(k.id)} approved for takeoff &amp; landing</label>`).join('')}
     </div>
     <div class="card"><h2>Switching pattern</h2>
+      <div class="field"><label for="ty-fill">Fill order (POH)</label><input id="ty-fill" class="mono" data-ty="fillOrder" value="${esc((t.fillOrder || t.tanks.map((k) => k.id)).join(', '))}" ${ro}></div>
+      <div class="field"><label>Tab level per tank (gal, blank = no tabs)</label><div class="grid4">${t.tanks.map((k, i) => `<div class="field"><label for="tt-${i}">${esc(k.id)}</label><input id="tt-${i}" class="mono" data-tk="${i}.tabGal" value="${k.tabGal ?? ''}" ${ro} inputmode="decimal"></div>`).join('')}</div></div>
       <div class="field"><label for="ty-groups">Burn order: pairs left/right, first used first</label><input id="ty-groups" class="mono" data-ty="groups" value="${esc(t.groups.map((g) => `${g.left}/${g.right}`).join(', '))}" ${ro}></div>
       <div class="grid2">
         <div class="field"><label for="ty-start">Start on</label><select id="ty-start" data-ty="startTank" ${ro}>${t.tanks.map((k) => `<option ${t.startTank === k.id ? 'selected' : ''}>${esc(k.id)}</option>`).join('')}</select></div>
@@ -1922,6 +2101,47 @@ const actions = {
     download(`${f.from || 'flight'}-${f.to || ''}-${new Date(f.engineStart || f.createdAt).toISOString().slice(0, 10)}.burnplan.json`, JSON.stringify({ kind: 'flight', app: APP_NAME, flight: f, tail: state.tails[f.tail] || null }, null, 1), 'application/json');
   },
   replayEnd(el) { ui.replayAt = null; ui.replayFid = el.dataset.fid; render(); },
+  newFueling(el) { state.fuelDraft = newFuelDraft(el.dataset.tail); persist(); go('fuel', 'edit'); },
+  fuReq(el) { state.fuelDraft.request = el.dataset.v; persist(); render(); },
+  fuAddStep() {
+    const d = state.fuelDraft, cfg = cfgForTail(d.tail);
+    const used = new Set(d.steps.map((x) => x.tank));
+    d.steps.push({ tank: cfg.fillOrder.find((id) => !used.has(id)) || cfg.fillOrder[0], reading: '' });
+    persist(); render();
+  },
+  fuDelStep(el) { state.fuelDraft.steps.splice(+el.dataset.i, 1); persist(); render(); },
+  fuDiscard() {
+    const d = state.fuelDraft;
+    ask(d.id ? 'Cancel your changes to this fueling?' : 'Discard this fueling?', d.id ? 'Cancel changes' : 'Discard', () => { const id = d.id; state.fuelDraft = null; persist(); go('fuel', id || null); });
+  },
+  fuSave() {
+    const d = state.fuelDraft;
+    const { res } = fuelingCalc(d);
+    if (!d.steps.some((x) => x.reading !== '' && isFinite(num(x.reading)))) return toast('Enter the pump reading for at least one tank');
+    const bad = res.stepGal.findIndex((g, i) => g != null && g < 0);
+    if (bad >= 0) return toast(`Step ${bad + 1}: pump reading is lower than the one before`);
+    const id = d.id || uid();
+    const clean = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, v]) => v !== '' && v != null));
+    state.fuelings = state.fuelings || {};
+    state.fuelings[id] = {
+      id, tail: d.tail, at: d.at, tz: d.tz, airport: (d.airport || '').toUpperCase(), request: d.request,
+      amounts: d.request === 'amounts' ? Object.fromEntries(Object.entries(clean(d.amounts)).map(([k, v]) => [k, num(v)])) : {},
+      before: Object.fromEntries(Object.entries(d.before || {}).map(([k, v]) => [k, v === '' || v == null ? null : num(v)])),
+      startReading: num(d.startReading) || 0,
+      steps: d.steps.filter((x) => x.reading !== '' && isFinite(num(x.reading))).map((x) => ({ tank: x.tank, reading: num(x.reading) })),
+      gaugeBefore: clean(d.gaugeBefore), gaugeAfter: clean(d.gaugeAfter), note: (d.note || '').trim() || null, savedAt: now()
+    };
+    state.fuelDraft = null;
+    ui.draft = null; state.settings.draft = null; // next flight's starting fuel picks this up
+    persist(); toast(`Fueling saved · ${f1(res.total)} gal`); go('fuel', id);
+  },
+  fuEdit(el) {
+    const x = state.fuelings[el.dataset.id];
+    const s = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k, v == null ? '' : String(v)]));
+    state.fuelDraft = { ...x, before: s(x.before), amounts: s(x.amounts), startReading: String(x.startReading), steps: x.steps.map((y) => ({ tank: y.tank, reading: String(y.reading) })), gaugeBefore: s(x.gaugeBefore), gaugeAfter: s(x.gaugeAfter), note: x.note || '', beforeLabel: null };
+    persist(); go('fuel', 'edit');
+  },
+  fuDelete(el) { const id = el.dataset.id; ask('Delete this fueling?', 'Delete', () => { delete state.fuelings[id]; persist(); go('fuel'); }); },
   saveStart: () => saveSheet('start'),
   saveClimb: () => saveSheet('climb'),
   saveLevel: () => saveSheet('level'),
@@ -2006,7 +2226,7 @@ const actions = {
     openSheet('switch', { atMs: e ? e.at : now(), tank: null });
   },
   exportAll() {
-    const data = { kind: 'backup', app: APP_NAME, exportedAt: new Date().toISOString(), tails: state.tails, customTypes: state.customTypes, flights: state.flights };
+    const data = { kind: 'backup', app: APP_NAME, exportedAt: new Date().toISOString(), tails: state.tails, customTypes: state.customTypes, flights: state.flights, fuelings: state.fuelings };
     download(`${APP_NAME.toLowerCase()}-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 1), 'application/json');
   },
   exportCsv(el) { const f = state.flights[el.dataset.id]; download(`${f.from || 'flight'}-${f.to || ''}-${new Date(f.engineStart || f.createdAt).toISOString().slice(0, 10)}.csv`, flightCsv(f), 'text/csv'); },
@@ -2111,13 +2331,30 @@ function onField(ev, committed) {
   if (el.dataset.d !== undefined && ui.draft) {
     const v = el.type === 'checkbox' ? el.checked : el.value;
     setPath(ui.draft, el.dataset.d, v);
-    if (el.dataset.d === 'tail') { const nt = el.value; ui.draft = { ...defaultDraft(), ...ui.draft, tail: nt, levels: Object.fromEntries(cfgForTail(nt).tanks.map((t) => [t.id, String(t.capacity)])) }; render(); return; }
+    if (el.dataset.d === 'tail') { const nt = el.value; ui.draft = { ...defaultDraft(), ...ui.draft, tail: nt, levels: startLevelsFor(nt, cfgForTail(nt)) }; render(); return; }
     if (el.dataset.d === 'alt.on') $('#altFields')?.classList.toggle('hidden', !el.checked);
     state.settings.draft = activeFlight() ? null : ui.draft;
     renderSetupCalc();
     if (committed) persist();
     return;
   }
+  if (state.fuelDraft && ui.route === 'fuel' && (el.dataset.fu || el.dataset.fub || el.dataset.fua || el.dataset.fgb || el.dataset.fga || el.dataset.fstank || el.dataset.fsread)) {
+    const d = state.fuelDraft;
+    if (el.dataset.fu === 'atClock') { const t = parseClockZ(el.value, now()); if (committed && isFinite(t)) d.at = t; }
+    else if (el.dataset.fu) d[el.dataset.fu] = el.value;
+    else if (el.dataset.fub) d.before[el.dataset.fub] = el.value;
+    else if (el.dataset.fua) (d.amounts = d.amounts || {})[el.dataset.fua] = el.value;
+    else if (el.dataset.fgb) (d.gaugeBefore = d.gaugeBefore || {})[el.dataset.fgb] = el.value;
+    else if (el.dataset.fga) (d.gaugeAfter = d.gaugeAfter || {})[el.dataset.fga] = el.value;
+    else if (el.dataset.fstank) d.steps[+el.dataset.fstank].tank = el.value;
+    else if (el.dataset.fsread) d.steps[+el.dataset.fsread].reading = el.value;
+    // Re-render after a pause, keeping focus where the user is now, so moving to the next field never eats typing.
+    clearTimeout(onField._fu);
+    if (el.dataset.fstank) { persist(); render(); return; }
+    onField._fu = setTimeout(() => { persist(); const y = window.scrollY, id = document.activeElement?.id; render(); window.scrollTo(0, y); const n = id && document.getElementById(id); if (n) { n.focus(); try { n.setSelectionRange(n.value.length, n.value.length); } catch (e) { /* select */ } } }, committed ? 50 : 600);
+    return;
+  }
+  if (el.dataset.fueltail !== undefined) { state.settings.fuelTail = el.value; persist(); render(); return; }
   if (el.dataset.gauge !== undefined) {
     ui.sd.vals = ui.sd.vals || {};
     ui.sd.vals[el.dataset.gauge] = el.value;
@@ -2160,6 +2397,15 @@ function onField(ev, committed) {
     return;
   }
   if (el.dataset.ovr) { setOverride(decodeURIComponent(ui.sub), el.dataset.ovr, el.value.trim()); render(); return; }
+  if (el.dataset.tab) {
+    const tail = state.tails[decodeURIComponent(ui.sub)];
+    tail.overrides = tail.overrides || {};
+    tail.overrides.tabs = tail.overrides.tabs || {};
+    const v = num(el.value);
+    if (isFinite(v) && v > 0) tail.overrides.tabs[el.dataset.tab] = v; else delete tail.overrides.tabs[el.dataset.tab];
+    if (!Object.keys(tail.overrides.tabs).length) delete tail.overrides.tabs;
+    persist(); render(); return;
+  }
   if (el.dataset.cap) {
     const tail = state.tails[decodeURIComponent(ui.sub)];
     tail.overrides = tail.overrides || {};
@@ -2177,6 +2423,7 @@ function onField(ev, committed) {
       const old = tank.id;
       let v = el.type === 'checkbox' ? el.checked : el.value;
       if (k === 'capacity') v = num(v) || tank.capacity;
+      if (k === 'tabGal') v = num(v) > 0 ? num(v) : undefined;
       if (k === 'id') { v = String(v).trim().toUpperCase() || old; t.groups.forEach((g) => { if (g.left === old) g.left = v; if (g.right === old) g.right = v; }); if (t.startTank === old) t.startTank = v; }
       tank[k] = v;
     });
@@ -2189,6 +2436,10 @@ function onField(ev, committed) {
         const ids = new Set(t.tanks.map((k) => k.id));
         const groups = el.value.split(',').map((s) => s.trim().toUpperCase().split('/')).filter((p) => p.length === 2 && ids.has(p[0]) && ids.has(p[1])).map(([l, r]) => ({ left: l, right: r }));
         if (groups.length) t.groups = groups; else toast('Use pairs like LM/RM, LT/RT');
+      } else if (el.dataset.ty === 'fillOrder') {
+        const ids = new Set(t.tanks.map((k) => k.id));
+        const order = el.value.split(/[,\s→>]+/).map((x) => x.trim().toUpperCase()).filter((x) => ids.has(x));
+        if (order.length) t.fillOrder = [...new Set(order)]; else toast('List tank IDs in order, like LT, RT, LM, RM');
       } else t[el.dataset.ty] = el.value;
     });
     render(); return;
@@ -2249,7 +2500,7 @@ setInterval(() => {
   const fp = activeFlight();
   if (ui.route === 'plan' && fp && fp.status === 'active' && !ui.sheet) {
     const minute = Math.floor(now() / MIN);
-    const editing = document.activeElement && $('#app').contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName);
+    const editing = document.activeElement && $('#app').contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
     if (minute !== ui.planMinute && !editing) {
       ui.planMinute = minute;
       const y = window.scrollY;

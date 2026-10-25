@@ -7,6 +7,8 @@ export function emptyState() {
     tails: {},          // { N12345: { tail, typeId, overrides: {...} } }
     customTypes: {},    // user-made aircraft types
     flights: {},        // { id: flight }
+    fuelings: {},       // { id: fueling } ground fill records
+    fuelDraft: null,    // fueling in progress
     activeFlightId: null,
     lastInputAt: Date.now(),
     settings: { lastTail: null, lastTaxi: {} }
@@ -65,6 +67,7 @@ export function mergeImport(state, data) {
   const n = { tails: 0, types: 0, flights: 0 };
   for (const [k, v] of Object.entries(data.tails || {})) { out.tails = { ...out.tails, [k]: v }; n.tails++; }
   for (const [k, v] of Object.entries(data.customTypes || {})) { out.customTypes = { ...out.customTypes, [k]: v }; n.types++; }
+  for (const [k, v] of Object.entries(data.fuelings || {})) if (!out.fuelings?.[k]) out.fuelings = { ...(out.fuelings || {}), [k]: v };
   for (const [k, v] of Object.entries(data.flights || {})) {
     if (!out.flights[k]) { out.flights = { ...out.flights, [k]: v }; n.flights++; }
   }

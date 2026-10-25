@@ -41,7 +41,10 @@ input[type=text], input[type=number], input:not([type]), select {
 }
 input.mono, select.mono { font-family: var(--mono); }
 input.big { height: 52px; font-size: 22px; font-family: var(--mono); }
-input.key { border: 2px solid var(--blue); }
+input.key, textarea.key { border: 2px solid var(--blue); }
+textarea { width: 100%; background: var(--bg); color: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: inherit; font-size: 16px; resize: vertical; }
+textarea:focus { outline: 2px solid var(--blue); outline-offset: 1px; }
+.evrow.note > span:first-child { white-space: pre-wrap; font-style: italic; }
 input:focus, select:focus { outline: 2px solid var(--blue); outline-offset: 1px; }
 input::placeholder { color: #5C6573; }
 .card input, .card select { background: var(--bg); }

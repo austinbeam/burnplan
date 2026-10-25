@@ -9,8 +9,8 @@ export const BUILTIN_TYPES = [
     // Tank order here is left-to-right as drawn on the overhead view.
     tanks: [
       { id: 'LT', name: 'Left tip', side: 'L', spot: 'tip', capacity: 17, takeoffLanding: true },
-      { id: 'LM', name: 'Left main', side: 'L', spot: 'inboard', capacity: 25, takeoffLanding: true },
-      { id: 'RM', name: 'Right main', side: 'R', spot: 'inboard', capacity: 25, takeoffLanding: true },
+      { id: 'LM', name: 'Left main', side: 'L', spot: 'inboard', capacity: 25, tabGal: 18, takeoffLanding: true },
+      { id: 'RM', name: 'Right main', side: 'R', spot: 'inboard', capacity: 25, tabGal: 18, takeoffLanding: true },
       { id: 'RT', name: 'Right tip', side: 'R', spot: 'tip', capacity: 17, takeoffLanding: true }
     ],
     // Burn order: groups are used in this order; within a group the planner toggles left/right.
@@ -18,6 +18,8 @@ export const BUILTIN_TYPES = [
       { left: 'LM', right: 'RM' },
       { left: 'LT', right: 'RT' }
     ],
+    // Fueling: POH order (tips first). tabGal = level when filled to the tabs.
+    fillOrder: ['LT', 'RT', 'LM', 'RM'],
     startTank: 'LM',
     finishSide: 'R',
     burn: {
