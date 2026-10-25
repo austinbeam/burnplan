@@ -126,13 +126,15 @@ export function timeForFuel(segs, t0, fuel) {
 // ---- plan generation -----------------------------------------------------
 // Greedy "longest legs": each leg burns until the next switch is needed to stay inside the
 // imbalance band or the tank reaches its planned minimum (floor + any reserve hold).
-export function generatePlan({ cfg, segs, startMin = 0, endMin, levels, currentTank = null, requiredLanding = 0 }) {
+export function generatePlan({ cfg, segs, startMin = 0, endMin, levels, currentTank = null, requiredLanding = 0, parked = [] }) {
   const tm = tankMap(cfg);
   const ids = cfg.tanks.map((t) => t.id);
   const floor = cfg.rules.floor.gal;
-  const extra = Math.max(0, requiredLanding - floor * ids.length);
+  const live = ids.filter((id) => !parked.includes(id));
+  const parkedGal = ids.filter((id) => parked.includes(id)).reduce((a, id) => a + Math.max(0, levels[id]), 0);
+  const extra = Math.max(0, requiredLanding - floor * live.length - parkedGal);
   const minLvl = {};
-  for (const id of ids) minLvl[id] = Math.min(levels[id], floor + extra / ids.length);
+  for (const id of ids) minLvl[id] = parked.includes(id) ? levels[id] : Math.min(levels[id], floor + extra / Math.max(1, live.length));
   const lv = { ...levels };
   const usable = (id) => Math.max(0, lv[id] - minLvl[id]);
   const side = (id) => tm[id].side;
@@ -237,7 +239,7 @@ export function generatePlan({ cfg, segs, startMin = 0, endMin, levels, currentT
 
 // ---- rule checks ----------------------------------------------------------
 // Simulates a plan (generated or user-edited) and returns per-leg results + issues.
-export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requiredLanding = 0, fromEngineStart = true }) {
+export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requiredLanding = 0, fromEngineStart = true, parked = [] }) {
   const tm = tankMap(cfg);
   const ids = cfg.tanks.map((t) => t.id);
   const r = cfg.rules;
@@ -270,6 +272,7 @@ export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requi
     if (gi >= 0 && gi < lastGroup) { flags.push('sequence'); add('sequence', 'warn', i, `${leg.tank} after a later tank group`); }
     if (gi > lastGroup) lastGroup = gi;
     if (i > 0 && i < legs.length - 1 && leg.min < (r.minLegMin || 0)) { flags.push('short'); add('shortleg', 'info', i, `Leg ${i + 1} is ${Math.round(leg.min)} min`); }
+    if (parked.includes(leg.tank) && leg.min > 0.5) { flags.push('parked'); add('parked', 'warn', i, `${leg.tank} is marked done for this flight`); }
     if (i > 0 && legs[i - 1].tank === leg.tank) { flags.push('dup'); add('dup', 'info', i, `Leg ${i + 1} repeats ${leg.tank}`); }
     rows.push({ ...leg, startMin: start, fuel, after: lv[leg.tank], levels: { ...lv }, L, R, imb, flags });
   });
@@ -295,6 +298,17 @@ export function checkPlan({ cfg, segs, legs, levels, startMin = 0, endMin, requi
   return { rows, issues, landing, landLevels: landLv, landImb, maxImb, startImb, planEnd: t };
 }
 
+// Tanks the pilot has marked done for the rest of the flight (left where they are), as of a time.
+export function parkedTanks(flight, atMs = Infinity) {
+  const set = new Set();
+  for (const e of [...(flight.events || [])].sort((a, b) => a.at - b.at)) {
+    if (e.at > atMs) break;
+    if (e.type === 'park') set.add(e.tank);
+    else if (e.type === 'unpark') set.delete(e.tank);
+  }
+  return [...set];
+}
+
 // ---- in-flight estimation ------------------------------------------------
 // flight: { engineStart, takeoff, startLevels, startTank, segs (min from engine start), cruiseGph, climbMin, events[] }
 // events: {type:'switch', tank, at} | {type:'check', at, used} | {type:'ete', at, eteMin, fuelToDest, gph}
@@ -317,7 +331,7 @@ export function activeClimb(flight, ms) {
   return last;
 }
 
-// Latest cruise burn the pilot gave us: a "set cruise burn" entry, or the rate implied by an ETE update.
+// Latest cruise burn the pilot gave us: a "set cruise burn" entry, a check with a flow, or a gph typed into an ETE update.
 // A burn entry with scope 'all' applies to the whole cruise, before and after it was entered; any later
 // from-now-on change still takes over from its own time.
 function lastEteRate(flight, ms) {
@@ -325,10 +339,9 @@ function lastEteRate(flight, ms) {
   for (let i = evs.length - 1; i >= 0; i--) {
     const e = evs[i];
     if ((e.type === 'burn' || (e.type === 'check' && e.setsBurn)) && e.gph > 0) return { at: e.at, gph: e.gph };
-    if (e.type === 'ete') {
-      if (e.fuelToDest > 0 && e.eteMin > 0) return { at: e.at, gph: e.fuelToDest / (e.eteMin / 60) };
-      if (e.gph > 0) return { at: e.at, gph: e.gph };
-    }
+    // An ETE update only changes cruise burn when the pilot typed a gph into it. ForeFlight's
+    // fuel-to-destination is never turned into a burn rate (older entries that did are ignored).
+    if (e.type === 'ete' && e.gph > 0 && (e.gphSet === true || (e.gphSet === undefined && !e.fuelToDest))) return { at: e.at, gph: e.gph };
   }
   return null;
 }

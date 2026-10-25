@@ -111,6 +111,8 @@ input::placeholder { color: #5C6573; }
 .gauge.on .tube { border: 2.5px solid var(--amber); }
 .gauge .lvl { position: absolute; left: 0; right: 0; bottom: 0; background: var(--fill); transition: height .4s; }
 .gauge.low .lvl { background: #8A4A33; }
+.gauge.done { opacity: .55; }
+.gauge.done .nm { text-decoration: line-through; }
 .gauge .flr { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--amber); }
 .gauge .g { font-family: var(--mono); font-size: 18px; font-weight: 500; }
 .gauge .of { font-size: 11px; color: var(--mut); }

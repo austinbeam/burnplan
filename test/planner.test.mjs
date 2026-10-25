@@ -80,7 +80,7 @@ test('estimate: switches, check correction, ETE update rate', () => {
   const e2 = P.estimate(flight, cfg, t0 + 92 * m);
   assert.ok(Math.abs(e2.used - 21) < 1e-6);
   assert.ok(Math.abs(e2.total - 63) < 1e-6, e2.total);
-  flight.events.push({ type: 'ete', at: t0 + 92 * m, eteMin: 60, fuelToDest: 18 });
+  flight.events.push({ type: 'ete', at: t0 + 92 * m, eteMin: 60, gph: 18, gphSet: true, fuelToDest: 25 });
   const e3 = P.estimate(flight, cfg, t0 + 122 * m);
   assert.ok(Math.abs(e3.total - (63 - 9)) < 1e-6, e3.total);
 });
@@ -189,7 +189,7 @@ test('set cruise burn mid-flight changes the cruise rate from then on', () => {
   assert.ok(Math.abs(P.estimate(f, cfg, to + 90 * m).used - before - (30 / 60) * 13.2) < 1e-6);
   assert.equal(P.remainingSegs(f, to + 90 * m).segs.at(-1).gph, 13.2);
   // a later ETE update with fuel overrides it, and a later burn overrides that
-  f.events.push({ type: 'ete', at: to + 100 * m, eteMin: 60, fuelToDest: 15 });
+  f.events.push({ type: 'ete', at: to + 100 * m, eteMin: 60, gph: 15, gphSet: true });
   assert.equal(P.phaseAt(f, to + 101 * m).gph, 15);
   f.events.push({ type: 'burn', at: to + 110 * m, gph: 14 });
   assert.equal(P.phaseAt(f, to + 111 * m).gph, 14);
@@ -291,4 +291,36 @@ test('fueling: per-tank gallons from running pump totals, compared with the calc
   const lm = a.rows.find((x) => x.tank === 'LM');
   assert.ok(Math.abs(lm.after - 16.3) < 1e-9); assert.ok(Math.abs(lm.diff - 0.3) < 1e-9);
   assert.equal(a.rows.find((x) => x.tank === 'LT').after, 4);
+});
+
+test('a tank marked done is left where it is (screenshot scenario)', () => {
+  const cfg = P.resolveConfig(type);
+  // ~70 min left at 14.8 gph, on LM, RM pulled at 5.5 calc
+  const segs = [{ phase: 'cruise', start: 0, min: 70, gph: 14.8 }];
+  const levels = { LT: 17, LM: 8.6, RM: 5.5, RT: 17 };
+  const g = P.generatePlan({ cfg, segs, startMin: 0, endMin: 70, levels, currentTank: 'LM', requiredLanding: 15, parked: ['RM'] });
+  assert.ok(!g.legs.some((l) => l.tank === 'RM'), JSON.stringify(g.legs));
+  const c = P.checkPlan({ cfg, segs, legs: g.legs, levels, startMin: 0, endMin: 70, requiredLanding: 15, fromEngineStart: false, parked: ['RM'] });
+  assert.ok(Math.abs(c.landLevels.RM - 5.5) < 1e-6);
+  assert.ok(!c.issues.some((i) => i.severity === 'error'), JSON.stringify(c.issues));
+  console.log(g.legs.map((l) => `${l.tank} ${l.min.toFixed(0)}m`).join(', '), c.landLevels);
+  // user re-adds RM by hand: flagged
+  const c2 = P.checkPlan({ cfg, segs, legs: [{ tank: 'RM', min: 10 }, ...g.legs], levels, startMin: 0, endMin: 80, parked: ['RM'] });
+  assert.ok(c2.issues.some((i) => i.rule === 'parked'));
+  // parkedTanks follows park/unpark events
+  const f = { events: [{ type: 'park', tank: 'RM', at: 10 }, { type: 'unpark', tank: 'RM', at: 20 }] };
+  assert.deepEqual(P.parkedTanks(f, 15), ['RM']);
+  assert.deepEqual(P.parkedTanks(f, 25), []);
+});
+
+test('ForeFlight fuel-to-destination on an ETE update never changes cruise burn', () => {
+  const cfg = P.resolveConfig(type);
+  const tl = P.buildTimeline(cfg, { taxiMin: 15, eteMin: 200, totalFuel: 55 });
+  const m = 60000, es = 1e12, to = es + 15 * m;
+  const f = { cfg, engineStart: es, takeoff: to, segs: tl.segments, cruiseGph: tl.cruiseGph, climbMin: 14, startLevels: full, startTank: 'LM',
+    events: [{ type: 'takeoff', at: to }, { type: 'burn', at: to + 47 * m, gph: 13.7 }, { type: 'ete', at: to + 120 * m, eteMin: 61, fuelToDest: 15.1, gphSet: false }] };
+  assert.equal(P.cruiseRateAt(f, to + 130 * m), 13.7);
+  // legacy entry saved before the fix (no gphSet) with ForeFlight fuel: ignored too
+  f.events[2] = { type: 'ete', at: to + 120 * m, eteMin: 61, fuelToDest: 15.1 };
+  assert.equal(P.cruiseRateAt(f, to + 130 * m), 13.7);
 });
