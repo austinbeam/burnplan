@@ -99,7 +99,7 @@ Type a time into the flight timer box on the Fly page to see the tanks at that m
 
 Record a fueling at the pump: top off, specific amounts, or tips full with the mains to the tabs. Enter the **cumulative** pump reading after each tank, in the order you fill them, and Burnplan works out each tank. The next flight starts with those levels. Optional gauge readings help you learn how your gauges read; they never change any calculation.
 
-If you weren't there to see each tank filled, switch to **Total only** and type the total gallons added. On a top-off or tabs fill, each tank is set to its target, and Burnplan compares the total with what it calculated the tanks needed. That difference, and its share of the calculated burn since the last fueling, shows how close your burn estimate is. It's for your information only: Burnplan never changes your cruise burn from it. With specific amounts, the total is only checked against what you asked for.
+If you weren't there to see each tank filled, switch to **Total only** and type the total gallons added. If you were told what one or two tanks took, enter those too: they get their own comparison, and the rest of the total is compared with the other tanks together. On a top-off or tabs fill, each tank is set to its target, and Burnplan compares the total with what it calculated the tanks needed. That difference, and its share of the calculated burn since the last fueling, shows how close your burn estimate is. It's for your information only: Burnplan never changes your cruise burn from it. With specific amounts, the total is only checked against what you asked for.
 
 ## Log
 

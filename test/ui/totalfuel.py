@@ -23,12 +23,21 @@ try:
         diff = page.locator('[data-totaldiff]').inner_text().replace('\n', ' ')
         print('diff line:', diff); assert '+9.0 gal' in diff, diff
         assert 'never changed' in page.inner_text('#app')
+        # one tank known: it gets its own diff, the rest is compared as a group
+        page.fill('#fk-LT', '14'); page.keyboard.press('Tab'); page.wait_for_timeout(300)
+        rest = page.locator('[data-restdiff]').inner_text().replace('\n', ' ')
+        print('rest line:', rest); assert 'LM + RM' in rest and 'RT' not in rest and '+8.0 gal' in rest, rest
+        assert '+9.0 gal' in page.locator('[data-totaldiff]').inner_text()
+        page.fill('#fk-LM', '60'); page.keyboard.press('Tab'); page.wait_for_timeout(300)
+        page.click('text=Save fueling'); page.wait_for_timeout(200)
+        assert page.evaluate("JSON.parse(localStorage['burnplan.v1']).fuelDraft") is not None, 'over-total split must not save'
+        page.fill('#fk-LM', ''); page.keyboard.press('Tab'); page.wait_for_timeout(300)
         page.screenshot(path=S + 'totalfuel_edit.png', full_page=True)
         page.click('text=Save fueling'); page.wait_for_timeout(300)
         st = json.loads(page.evaluate("localStorage['burnplan.v1']"))
         fu = list(st['fuelings'].values())[0]
         print('saved:', fu['mode'], fu['totalAdded'], fu['steps'], fu['request'])
-        assert fu['mode'] == 'total' and fu['totalAdded'] == 61 and fu['steps'] == []
+        assert fu['mode'] == 'total' and fu['totalAdded'] == 61 and fu['steps'] == [] and fu['known'] == {'LT': 14}, fu.get('known')
         detail = page.inner_text('#app'); print('DETAIL:', detail[:600].replace('\n', ' | '))
         assert 'Total only' in detail and '61.0 gal' in detail
         page.screenshot(path=S + 'totalfuel_detail.png', full_page=True)
@@ -46,7 +55,7 @@ try:
         page.locator('.list a.item').first.click(); page.wait_for_timeout(200)
         page.click('text=Edit'); page.wait_for_timeout(200)
         print('edit mode on:', page.locator('[data-act=fuMode].on').inner_text(), page.locator('#fu-total').input_value())
-        assert page.locator('#fu-total').input_value() == '61'
+        assert page.locator('#fu-total').input_value() == '61' and page.locator('#fk-LT').input_value() == '14'
         b.close()
 finally: srv.terminate()
 print('ERRORS', errs)

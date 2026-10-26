@@ -328,6 +328,30 @@ test('fueling, total only: tanks reach their targets and the total is compared w
   assert.equal(pt.expectedTotal, 52); assert.ok(Math.abs(pt.totalDiff - 1) < 1e-9);
 });
 
+test('fueling, total only with some tanks known: those get their own diff, the rest is compared as a group', () => {
+  const tanks = [
+    { id: 'LT', capacity: 17 }, { id: 'LM', capacity: 25, tabGal: 18 }, { id: 'RM', capacity: 25, tabGal: 18 }, { id: 'RT', capacity: 17 }
+  ];
+  const before = { LT: 4, LM: 6, RM: 5, RT: 3 };
+  // needs LT 13, LM 19, RM 20, RT 14 = 66
+  const r = P.fuelingResult({ request: 'full', mode: 'total', totalAdded: 70, known: { LT: 14, RT: '15.5', RM: '' }, before }, tanks);
+  const by = Object.fromEntries(r.rows.map((x) => [x.tank, x]));
+  assert.equal(by.LT.pumped, 14); assert.equal(by.LT.diff, 1); assert.equal(by.LT.given, true);
+  assert.equal(by.RT.diff, 1.5);
+  assert.equal(by.LM.pumped, null); assert.equal(by.LM.diff, null); assert.equal(by.RM.given, false);
+  assert.equal(by.LT.after, 17); assert.equal(by.LM.after, 25);
+  assert.deepEqual(r.rest.tanks, ['LM', 'RM']);
+  assert.equal(r.rest.knownGal, 29.5); assert.equal(r.rest.added, 40.5); assert.equal(r.rest.expected, 39); assert.equal(r.rest.diff, 1.5);
+  assert.equal(r.totalDiff, 4, 'whole-airplane diff is unchanged by the split');
+  // nothing known: no group line
+  assert.equal(P.fuelingResult({ request: 'full', mode: 'total', totalAdded: 70, before }, tanks).rest, null);
+  // specific amounts: a known tank's after is before + what it took
+  const a = P.fuelingResult({ request: 'amounts', mode: 'total', totalAdded: 22, amounts: { LM: 10, RM: 10 }, known: { LM: 12 }, before }, tanks);
+  assert.equal(a.rows.find((x) => x.tank === 'LM').after, 18);
+  assert.equal(a.rows.find((x) => x.tank === 'RM').after, 15);
+  assert.equal(a.rest.diff, 0);
+});
+
 test('a tank marked done is left where it is (screenshot scenario)', () => {
   const cfg = P.resolveConfig(type);
   // ~70 min left at 14.8 gph, on LM, RM pulled at 5.5 calc
